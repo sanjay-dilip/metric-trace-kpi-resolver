@@ -1,0 +1,5 @@
+# Virtual environment
+metric-trace/
+
+# Local Code-session context, not part of the public repo
+project-brief.md
