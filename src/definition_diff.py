@@ -18,6 +18,15 @@ Confidence rule for inferred fields:
   - "low" when extraction required guessing: zero or multiple date columns,
     zero or multiple status filters (or a filter in an unrecognized/inclusion
     form, e.g. status = 'active'), zero or multiple aggregate calls.
+
+source/confidence combination rule, when a DefinitionDifference spans one
+declared side and one inferred side ("weakest link" — a single field has one
+source and one confidence, not one per side, so the less-trustworthy
+contributor determines both):
+  - source is "declared" only when BOTH sides are declared; if either side is
+    inferred, source is "inferred".
+  - confidence is the lower of the two sides' confidences (high > medium >
+    low), so a declared/inferred pairing can never read as "high" overall.
 """
 
 from dataclasses import dataclass
@@ -27,11 +36,13 @@ import sqlglot
 from sqlglot import exp
 
 from src.schema import DefinitionDifference
-from src.scenario import DeclaredDefinition
-from src.sql_parser import ParsedSQL
+from src.scenario import DashboardSource, DeclaredDefinition
+from src.sql_parser import ParsedSQL, parse_sql
 from src.sql_diff import _bare_column
 
 _InferredConfidence = Literal["medium", "low"]
+_Confidence = Literal["high", "medium", "low"]
+_CONFIDENCE_RANK: dict[_Confidence, int] = {"low": 0, "medium": 1, "high": 2}
 
 
 @dataclass
@@ -183,3 +194,65 @@ def _infer_aggregation(parsed: ParsedSQL) -> InferredField:
             function = "count_distinct"
         return InferredField(value=function, confidence="medium")
     return InferredField(value="(ambiguous)", confidence="low")
+
+
+def _resolve_side(
+    field: str, declared: DeclaredDefinition | None, inferred: InferredDefinition | None
+) -> tuple[str, _Confidence, Literal["declared", "inferred"]]:
+    """Resolve one side's (value, confidence, source) for a given field, from
+    whichever of declared/inferred is actually present for that side."""
+    if declared is not None:
+        raw_value = getattr(declared, field)
+        if field == "excluded_statuses":
+            raw_value = ", ".join(sorted(set(raw_value))) or "(none)"
+        return raw_value, "high", "declared"
+    inferred_field: InferredField = getattr(inferred, field)
+    return inferred_field.value, inferred_field.confidence, "inferred"
+
+
+def _values_equal(field: str, value_a: str, value_b: str) -> bool:
+    """excluded_statuses is compared as a set (comma-joined string parsed back
+    apart) so ordering never produces a spurious difference; other fields
+    compare as exact strings."""
+    if field == "excluded_statuses":
+        set_a = {v.strip() for v in value_a.split(",") if v.strip() and v.strip() != "(none)"}
+        set_b = {v.strip() for v in value_b.split(",") if v.strip() and v.strip() != "(none)"}
+        return set_a == set_b
+    return value_a == value_b
+
+
+def diff_definitions(source_a: DashboardSource, source_b: DashboardSource) -> list[DefinitionDifference]:
+    """Top-level entry point: routes to declared-vs-declared comparison when
+    both sides have a declared definition, otherwise infers the missing
+    side(s) from SQL and compares declared-vs-inferred or inferred-vs-inferred.
+    See module docstring for the source/confidence combination rule."""
+    declared_a = source_a.declared_definition
+    declared_b = source_b.declared_definition
+
+    if declared_a is not None and declared_b is not None:
+        return diff_declared_definitions(declared_a, declared_b)
+
+    inferred_a = None if declared_a is not None else infer_definition_from_sql(parse_sql(source_a.sql))
+    inferred_b = None if declared_b is not None else infer_definition_from_sql(parse_sql(source_b.sql))
+
+    diffs = []
+    for field in ("date_field", "excluded_statuses", "aggregation"):
+        value_a, confidence_a, source_side_a = _resolve_side(field, declared_a, inferred_a)
+        value_b, confidence_b, source_side_b = _resolve_side(field, declared_b, inferred_b)
+
+        if _values_equal(field, value_a, value_b):
+            continue
+
+        overall_source = "declared" if source_side_a == "declared" and source_side_b == "declared" else "inferred"
+        overall_confidence = min((confidence_a, confidence_b), key=lambda c: _CONFIDENCE_RANK[c])
+
+        diffs.append(
+            DefinitionDifference(
+                field=field,
+                source_a_value=value_a,
+                source_b_value=value_b,
+                source=overall_source,
+                confidence=overall_confidence,
+            )
+        )
+    return diffs
