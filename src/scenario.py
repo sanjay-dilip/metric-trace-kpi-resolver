@@ -24,3 +24,18 @@ class DashboardSource(BaseModel):
     label: str
     sql: str
     declared_definition: DeclaredDefinition | None
+
+
+class Scenario(BaseModel):
+    """One KPI dispute between two dashboard sources, with the known gap between
+    their reported values. known_gap is defined as reported_value_a minus
+    reported_value_b: positive means source A reports higher than source B,
+    negative means source B reports higher than source A."""
+
+    scenario_id: str
+    description: str
+    source_a: DashboardSource
+    source_b: DashboardSource
+    reported_value_a: float
+    reported_value_b: float
+    known_gap: float
