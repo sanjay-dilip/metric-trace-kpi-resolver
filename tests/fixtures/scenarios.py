@@ -1,4 +1,4 @@
-"""The 6 hand-designed test scenarios used to build and validate Build 1's
+"""The 7 hand-designed test scenarios used to build and validate Build 1's
 deterministic tools (Days 2-6). Each is a committed Scenario instance, not a
 throwaway object — SQL is realistic enough for sqlglot to parse and for the
 intended structural/definitional difference to actually be present in the
@@ -203,6 +203,57 @@ CASE_6_NEGATIVE_CONTROL = Scenario(
     seed_table="case_06_negative_control",
 )
 
+# Case 7: Precedence-rule conflict. Unlike Case 4 (governance drift), A and B
+# declare GENUINELY DIFFERENT excluded_statuses (A: cancelled only; B:
+# cancelled + refunded) -- so diff_definitions(A, B) actually populates a
+# real, non-empty excluded_statuses finding. AND A's SQL contradicts A's own
+# declared definition on that same field: A declares excluding 'cancelled'
+# but A's SQL only excludes 'refunded' (status != 'refunded') -- a governance
+# drift that also fires check_self_consistency on excluded_statuses. Both
+# conditions hold on the same field simultaneously, which Case 4 cannot
+# produce (Case 4's declared sides agree by design, so its cross-source diff
+# is empty before the precedence rule ever runs). This is the case that
+# proves the precedence rule actually suppresses something, not just that it
+# runs without error.
+CASE_7_PRECEDENCE_CONFLICT = Scenario(
+    scenario_id="case_07_precedence_conflict",
+    description=(
+        "Precedence-rule conflict: A and B declare genuinely different "
+        "excluded_statuses (declared conflict), AND A's SQL also "
+        "contradicts A's own declared definition on that same field "
+        "(governance drift) -- exercises the SelfConsistencyIssue "
+        "suppressing the matching cross-source DefinitionDifference."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE status != 'refunded' AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="order_date",
+            excluded_statuses=["cancelled"],
+            aggregation="sum",
+        ),
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE status NOT IN ('cancelled', 'refunded') AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="order_date",
+            excluded_statuses=["cancelled", "refunded"],
+            aggregation="sum",
+        ),
+    ),
+    reported_value_a=300.0,
+    reported_value_b=100.0,
+    known_gap=300.0 - 100.0,
+    seed_table="case_07_precedence_conflict",
+)
+
 SCENARIOS = [
     CASE_1_JOIN_TYPE,
     CASE_2_MULTI_CAUSE,
@@ -210,4 +261,5 @@ SCENARIOS = [
     CASE_4_GOVERNANCE_DRIFT,
     CASE_5_UNEXPLAINED_RESIDUAL,
     CASE_6_NEGATIVE_CONTROL,
+    CASE_7_PRECEDENCE_CONFLICT,
 ]

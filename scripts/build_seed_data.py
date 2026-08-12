@@ -1,5 +1,5 @@
 """One-off setup script: builds the synthetic row-level DuckDB seed data
-backing each of the 6 scenario fixtures in tests/fixtures/scenarios.py.
+backing each of the 7 scenario fixtures in tests/fixtures/scenarios.py.
 
 Design: Scenario.seed_table (src/scenario.py) is a single str per scenario,
 but a scenario's two sides sometimes need to represent genuinely different
@@ -127,6 +127,24 @@ CASE_6_ORDERS = [
     (4, 1, 10000.0, "active", "2023-12-01"),    # excluded by date
 ]
 
+# --- Case 7: precedence-rule conflict. order_id 2 (cancelled) is wrongly
+# INCLUDED by A's as-written SQL (which only excludes 'refunded', not
+# 'cancelled' as A declares) -- A's SQL under-excludes relative to its own
+# declaration. order_id 3 (refunded) is wrongly EXCLUDED by A's as-written
+# SQL relative to what A's declaration alone would imply -- A's SQL excludes
+# a status ('refunded') that A's declared excluded_statuses (['cancelled'])
+# never named. Together these give "A corrected to its own declaration"
+# (excluding only 'cancelled') a materially different sum (400.0) than A's
+# as-written SQL (300.0) -- a real, measurable 100.0 gap, same as Case 4's
+# audit found, supporting a future Day 5 dollar-impact computation without
+# building it here. ---
+CASE_7_ORDERS = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 1, 200.0, "cancelled", "2024-03-01"),  # A's SQL wrongly includes this
+    (3, 1, 300.0, "refunded", "2024-01-15"),   # A's SQL wrongly excludes this
+    (4, 1, 400.0, "active", "2023-12-01"),     # excluded by date, both sides
+]
+
 
 def _seed_file(seed_table: str, side: str, *table_builds: tuple) -> Path:
     """Create (or replace) one seed file at DATA_SAMPLE_DIR/{seed_table}_{side}.duckdb,
@@ -160,6 +178,7 @@ def build_all() -> None:
         )
         _seed_file("case_04_governance_drift", side, (_build_orders_table, CASE_4_ORDERS))
         _seed_file("case_06_negative_control", side, (_build_orders_table, CASE_6_ORDERS))
+        _seed_file("case_07_precedence_conflict", side, (_build_orders_table, CASE_7_ORDERS))
 
     _seed_file("case_05_unexplained_residual", "a", (_build_orders_table, CASE_5_ORDERS_A))
     _seed_file("case_05_unexplained_residual", "b", (_build_orders_table, CASE_5_ORDERS_B))
