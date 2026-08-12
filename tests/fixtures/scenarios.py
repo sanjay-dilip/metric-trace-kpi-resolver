@@ -41,6 +41,7 @@ CASE_1_JOIN_TYPE = Scenario(
     reported_value_a=152300.0,
     reported_value_b=148900.0,
     known_gap=152300.0 - 148900.0,
+    seed_table="case_01_join_type",
 )
 
 # Case 2: Multi-cause, both declared, definitions genuinely differ (excluded_statuses)
@@ -75,6 +76,7 @@ CASE_2_MULTI_CAUSE = Scenario(
     reported_value_a=8400.0,
     reported_value_b=7150.0,
     known_gap=8400.0 - 7150.0,
+    seed_table="case_02_multi_cause",
 )
 
 # Case 3: Declared vs. undeclared. B has no declared_definition (hybrid fallback
@@ -102,6 +104,7 @@ CASE_3_HYBRID_FALLBACK = Scenario(
     reported_value_a=203000.0,
     reported_value_b=197500.0,
     known_gap=203000.0 - 197500.0,
+    seed_table="case_03_hybrid_fallback",
 )
 
 # Case 4: Governance drift (self-consistency issue). A's declared definition says
@@ -134,6 +137,7 @@ CASE_4_GOVERNANCE_DRIFT = Scenario(
     reported_value_a=210000.0,
     reported_value_b=198500.0,
     known_gap=210000.0 - 198500.0,
+    seed_table="case_04_governance_drift",
 )
 
 # Case 5: Unexplained residual. Declared definitions match and SQL is structurally
@@ -169,6 +173,7 @@ CASE_5_UNEXPLAINED_RESIDUAL = Scenario(
     reported_value_a=180000.0,
     reported_value_b=176200.0,
     known_gap=180000.0 - 176200.0,
+    seed_table="case_05_unexplained_residual",
 )
 
 # Case 6: Negative control. No declared definitions on either side, and the SQL
@@ -195,6 +200,7 @@ CASE_6_NEGATIVE_CONTROL = Scenario(
     reported_value_a=95000.0,
     reported_value_b=95000.0,
     known_gap=95000.0 - 95000.0,
+    seed_table="case_06_negative_control",
 )
 
 SCENARIOS = [
