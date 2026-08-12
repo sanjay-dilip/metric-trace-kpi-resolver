@@ -30,7 +30,15 @@ class Scenario(BaseModel):
     """One KPI dispute between two dashboard sources, with the known gap between
     their reported values. known_gap is defined as reported_value_a minus
     reported_value_b: positive means source A reports higher than source B,
-    negative means source B reports higher than source A."""
+    negative means source B reports higher than source A. known_gap is the
+    hand-authored, independently-asserted expected value -- it is not derived
+    from executing against seed_table, and this schema change does not alter
+    that.
+
+    seed_table names the DuckDB table containing the synthetic row-level data
+    that this scenario's queries (source_a.sql, source_b.sql) execute
+    against. The table itself is created and populated separately, in a
+    fixture-build step -- this field only names it."""
 
     scenario_id: str
     description: str
@@ -39,3 +47,4 @@ class Scenario(BaseModel):
     reported_value_a: float
     reported_value_b: float
     known_gap: float
+    seed_table: str
