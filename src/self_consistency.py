@@ -30,12 +30,24 @@ orchestration layer that depends on both sits above both, in whichever
 of the two doesn't need to import the other. No new inference or
 comparison logic is added: this is pure orchestration and filtering over
 already-verified Day 3 / Day 4 Part 1 functions.
+
+Day 5, Task 1b adds assemble_structural_and_definitional_evidence, which
+implements decision 10 (docs/decisions.md): src.sql_diff's `distinct`
+category finding is suppressed in favor of src.definition_diff's
+`aggregation` field finding when both trace to the same underlying
+COUNT/COUNT DISTINCT fact -- a Case 2 audit found decision 10 had been
+recorded in the decision log with no enforcing code anywhere, which this
+closes. Placed here for the same reason as assemble_definitional_evidence:
+"structurally the same kind of precedence rule ... applied to a second
+category pair" (decision 10's own wording), and this module only needs
+the SQLStructuralDifference *type* from src.schema, not anything from
+src.sql_diff itself, so co-locating it here introduces no import cycle.
 """
 
 from typing import Literal
 
 from src.definition_diff import _values_equal, diff_definitions, infer_definition_from_sql
-from src.schema import DefinitionDifference, SelfConsistencyIssue
+from src.schema import DefinitionDifference, SelfConsistencyIssue, SQLStructuralDifference
 from src.scenario import DashboardSource
 from src.sql_parser import parse_sql
 
@@ -134,3 +146,53 @@ def assemble_definitional_evidence(
     ]
 
     return definition_differences, self_consistency_issues
+
+
+_DISTINCT_SUFFIX = "_distinct"
+
+
+def _same_count_distinct_fact(definition_differences: list[DefinitionDifference]) -> bool:
+    """"Same underlying fact" is defined precisely, not just "both categories
+    present": an `aggregation` DefinitionDifference qualifies only when its
+    two values are the same base aggregation function, differing solely by
+    the "_distinct" suffix (e.g. "count_distinct" vs "count") -- exactly the
+    shape infer_definition_from_sql (src/definition_diff.py) produces when
+    one side is COUNT(DISTINCT col) and the other is COUNT(col), the same
+    fact sql_diff's `distinct` category is built to flag. A same-function
+    match is required in both directions (either side may be the DISTINCT
+    one) so this doesn't accidentally match an unrelated pairing that merely
+    happens to contain the substring "distinct"."""
+    for diff in definition_differences:
+        if diff.field != "aggregation":
+            continue
+        a, b = diff.source_a_value, diff.source_b_value
+        if a.endswith(_DISTINCT_SUFFIX) and a[: -len(_DISTINCT_SUFFIX)] == b:
+            return True
+        if b.endswith(_DISTINCT_SUFFIX) and b[: -len(_DISTINCT_SUFFIX)] == a:
+            return True
+    return False
+
+
+def assemble_structural_and_definitional_evidence(
+    sql_differences: list[SQLStructuralDifference],
+    definition_differences: list[DefinitionDifference],
+) -> tuple[list[SQLStructuralDifference], list[DefinitionDifference]]:
+    """Implements decision 10: when a `distinct`-category SQLStructuralDifference
+    and an `aggregation`-category DefinitionDifference both exist and trace to
+    the same underlying COUNT/COUNT DISTINCT fact (per _same_count_distinct_fact),
+    the `distinct` finding is removed from sql_differences -- the DISTINCT
+    toggle is a downstream symptom of the aggregation-definition disagreement,
+    not an independent cause. definition_differences (including `aggregation`)
+    is always returned unmodified; only sql_differences is ever pruned here.
+
+    When the condition does not hold -- either finding absent, or a `distinct`
+    finding present without a same-fact `aggregation` counterpart -- both
+    lists pass through unchanged. No new inference or comparison logic: this
+    is orchestration/filtering only, over already-computed sql_diff and
+    definition_diff output, same as assemble_definitional_evidence.
+    """
+    has_distinct_finding = any(diff.category == "distinct" for diff in sql_differences)
+    if has_distinct_finding and _same_count_distinct_fact(definition_differences):
+        sql_differences = [diff for diff in sql_differences if diff.category != "distinct"]
+
+    return sql_differences, definition_differences
