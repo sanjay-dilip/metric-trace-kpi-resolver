@@ -18,12 +18,24 @@ dollar_impact is NOT computed here. SelfConsistencyIssue requires it as a
 non-optional field, so every issue built here uses dollar_impact=0.0 as an
 explicit placeholder -- actual dollar-impact computation is Day 5's
 reconciliation math, not this module's job.
+
+Day 4 Part 2 adds assemble_definitional_evidence, which orchestrates this
+module's check_self_consistency together with src.definition_diff's
+diff_definitions and applies the precedence rule documented on
+InvestigationEvidence (src/schema.py): a SelfConsistencyIssue on a field
+suppresses the matching cross-source DefinitionDifference for that field.
+It lives here rather than in src/definition_diff.py to avoid a circular
+import -- this module already imports from definition_diff, so the
+orchestration layer that depends on both sits above both, in whichever
+of the two doesn't need to import the other. No new inference or
+comparison logic is added: this is pure orchestration and filtering over
+already-verified Day 3 / Day 4 Part 1 functions.
 """
 
 from typing import Literal
 
-from src.definition_diff import _values_equal, infer_definition_from_sql
-from src.schema import SelfConsistencyIssue
+from src.definition_diff import _values_equal, diff_definitions, infer_definition_from_sql
+from src.schema import DefinitionDifference, SelfConsistencyIssue
 from src.scenario import DashboardSource
 from src.sql_parser import parse_sql
 
@@ -79,3 +91,46 @@ def check_self_consistency(
             )
         )
     return issues
+
+
+def assemble_definitional_evidence(
+    source_a: DashboardSource, source_b: DashboardSource
+) -> tuple[list[DefinitionDifference], list[SelfConsistencyIssue]]:
+    """Run check_self_consistency on both sides and diff_definitions across
+    them, then apply the precedence rule: a field with a SelfConsistencyIssue
+    on either side has its matching cross-source DefinitionDifference removed
+    from the returned list, since that cross-source comparison is not
+    meaningful once one side's own SQL is known to contradict its own
+    declared definition for that field.
+
+    None-handling choice: check_self_consistency raises TypeError on a source
+    with no declared_definition (Day 4 Part 1's fail-loud contract), because
+    at that function's level a missing declaration is the caller's mistake --
+    there is nothing to check. At THIS level, a missing declared_definition
+    is not a mistake; it is an expected, valid scenario state (the Day 3
+    hybrid-fallback case), so this function checks for None itself and treats
+    it as "self-consistency does not apply to this side," never calling
+    check_self_consistency on that side rather than catching the exception it
+    would raise.
+
+    Returns (definition_differences, self_consistency_issues) -- the pruned
+    cross-source list and the self-consistency list, unmodified. This is the
+    definitional/self-consistency slice of InvestigationEvidence only:
+    sql_differences (Day 2), reconciliation, and unexplained_residual
+    (Day 5) are not assembled here and are left to a later top-level
+    assembly step.
+    """
+    self_consistency_issues: list[SelfConsistencyIssue] = []
+    if source_a.declared_definition is not None:
+        self_consistency_issues += check_self_consistency(source_a, "a")
+    if source_b.declared_definition is not None:
+        self_consistency_issues += check_self_consistency(source_b, "b")
+
+    cross_source_differences = diff_definitions(source_a, source_b)
+
+    suppressed_fields = {issue.declared_field for issue in self_consistency_issues}
+    definition_differences = [
+        diff for diff in cross_source_differences if diff.field not in suppressed_fields
+    ]
+
+    return definition_differences, self_consistency_issues
