@@ -9,6 +9,7 @@ from tests.fixtures.scenarios import (
     CASE_2_MULTI_CAUSE,
     CASE_4_GOVERNANCE_DRIFT,
     CASE_6_NEGATIVE_CONTROL,
+    CASE_7_PRECEDENCE_CONFLICT,
     SCENARIOS,
 )
 
@@ -71,6 +72,29 @@ def test_case_6_negative_control_both_lists_empty():
     )
     assert dd == []
     assert sci == []
+
+
+def test_case_7_precedence_rule_actually_suppresses_a_real_finding():
+    """Case 7 is the case Case 4 cannot be: A and B declare genuinely
+    different excluded_statuses (a real cross-source conflict), AND A's SQL
+    also contradicts A's own declared definition on that same field. This
+    proves the precedence rule suppresses something real, not just that it
+    runs without error on an already-empty cross-source diff (Case 4)."""
+    raw_cross_source = diff_definitions(
+        CASE_7_PRECEDENCE_CONFLICT.source_a, CASE_7_PRECEDENCE_CONFLICT.source_b
+    )
+    assert "excluded_statuses" in {d.field for d in raw_cross_source}
+
+    dd, sci = assemble_definitional_evidence(
+        CASE_7_PRECEDENCE_CONFLICT.source_a, CASE_7_PRECEDENCE_CONFLICT.source_b
+    )
+
+    assert "excluded_statuses" not in {d.field for d in dd}
+    assert len(sci) == 1
+    assert sci[0].source == "a"
+    assert sci[0].declared_field == "excluded_statuses"
+    assert sci[0].declared_value == "cancelled"
+    assert sci[0].implemented_value == "refunded"
 
 
 def test_all_scenarios_run_without_error():
