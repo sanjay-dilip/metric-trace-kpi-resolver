@@ -1,0 +1,90 @@
+# Decision Log
+
+Why, not just what. Chronological order (matches how the decisions were made), not reverse-chronological. Full problem statement and brief: see local `project-brief.md` (gitignored, not in this repo).
+
+---
+
+## 1. Positioning: investigation copilot, not a monitoring platform
+
+**Decision:** MetricTrace is an investigation copilot for an already-flagged discrepancy. It is not a monitoring or drift-detection platform.
+
+**Reasoning:** Deliberate differentiation from tools like Monte Carlo, Metaplane, and Bigeye, which detect that something is wrong. MetricTrace starts after a discrepancy is already known and explains why it exists. Conflating the two would blur the product's actual scope and invite comparison against a category of tools it isn't competing with.
+
+## 2. Methodology: single-agent baseline before multi-agent
+
+**Decision:** A single-agent baseline (deterministic reconciliation core + one LLM explainer) is built and evaluated before any multi-agent component is added.
+
+**Reasoning:** Establishes a working, measurable system first. Multi-agent complexity is added on top of a proven baseline rather than being the first thing built, so any accuracy gain (or lack of one) from the multi-agent architecture is attributable and not just assumed.
+
+## 3. Architecture core: parallel investigator agents (not gated)
+
+**Decision:** Two parallel investigator agents — a metric-definition specialist and a SQL-lineage specialist — run independently and are merged before reconciliation. This ships regardless of the ablation outcome in decision 5.
+
+**Reasoning:** Justified by problem shape, not by an accuracy test: metric-definition differences and SQL-lineage differences are structurally independent analyses, so running them in parallel and merging matches how the investigation actually decomposes. Not gating this on a benchmark result ensures a real multi-agent story survives even if the ablation in decision 4 fails.
+
+## 4. Architecture ablation: skeptic/verifier agent (gated, may be cut)
+
+**Decision:** Explainer-only vs. explainer + skeptic/verifier agent is the one piece of the architecture allowed to be dropped based on benchmark results, per the thresholds in decision 5.
+
+**Reasoning:** Unlike the parallel investigators (decision 3), the skeptic/verifier's value is an empirical claim — that a second agent checking the first improves accuracy or reduces unsupported claims — so it's the right piece to gate on evidence rather than assume.
+
+## 5. Ablation gate thresholds
+
+**Decision:** The skeptic/verifier ships only if the single-agent baseline fails any of:
+- Root-cause accuracy on technical/deterministic scenarios ≥ 80%
+- Human-escalation accuracy on ambiguous business-rule scenarios ≥ 90%
+- Unsupported-claim rate across all scenarios ≤ 10%
+
+If the baseline clears all three, the skeptic is cut from the shipped architecture.
+
+**Reasoning:** Turns decision 4 into a decision the benchmark can actually make, instead of a subjective call after the fact.
+
+## 6. Open eval-design question: escalation accuracy denominator
+
+**Decision:** Not yet resolved. Must be decided before Build 2 eval code is written: whether human-escalation accuracy (decision 5) is measured only against the true-ambiguous scenario subset, or against the full benchmark.
+
+**Reasoning:** Over-escalation could inflate escalation accuracy while dragging down technical accuracy on borderline cases. The two metrics in decision 5 can fight each other if the denominator isn't pinned down first, so this has to be settled before the eval code — not the benchmark scenarios themselves — makes the choice by default.
+
+## 7. Benchmark sample size and reporting
+
+**Decision:** The benchmark is n=20-30 scenarios. Each threshold in decision 5 is reported as a raw fraction (e.g., 21/25) alongside the percentage in any writeup, never as a bare percentage.
+
+**Reasoning:** The sample is too small for a bare percentage to be self-evidently stable — 80% on n=25 is 20/25, and that difference matters to a reader evaluating the claim.
+
+## 8. Build ordering: freshness/data-quality scenarios moved ahead of the benchmark build
+
+**Decision:** Freshness and data-quality investigation, originally planned as a later addition, was moved ahead of the benchmark-and-eval build.
+
+**Reasoning:** The benchmark and the single-vs-multi-agent gate decision (decisions 4-5) are made once, against the full scenario set including freshness causes. Building freshness scenarios after the benchmark and gate decision were already made would have forced revisiting that decision once freshness scenarios were added — moving it earlier avoids that rework.
+
+## 9. Tech stack
+
+**Decision:** LangGraph for orchestration. Gemini (free tier) as the LLM, behind a provider-abstraction layer (`llm_client.py`). Pydantic for schema-enforced structured output at every tool/agent boundary. Sqlglot for SQL AST diffing. DuckDB for the scenario data store. Streamlit for the UI, calling the engine directly — FastAPI deliberately deferred to a future-improvements note, not built now. Tenacity for retry/backoff, given Gemini's free-tier rate limits.
+
+**Reasoning:** Each choice maps to a specific constraint: LangGraph for the multi-agent orchestration in decisions 3-4; the provider-abstraction layer so the LLM (currently free-tier Gemini) can be swapped without touching agent logic; pydantic structured output so the LLM never gets to freeform its way past a schema boundary; sqlglot and DuckDB as the deterministic-core tools that do the actual computation, per the project's deterministic-core-LLM-at-the-edge convention; Streamlit-direct over a FastAPI layer because no second consumer of the engine exists yet, so the extra layer would be unused abstraction; tenacity because free-tier rate limits make retry/backoff a functional requirement, not an optimization.
+
+## 10. Precedence rule: sql_diff's `distinct` finding suppressed in favor of definition_diff's `aggregation` finding
+
+**Decision:** When `sql_diff`'s `distinct` category and `definition_diff`'s `aggregation` field trace to the same underlying COUNT vs. COUNT DISTINCT fact (Case 2), the `distinct` finding is suppressed in favor of the `aggregation` finding. The DISTINCT toggle is a downstream symptom of the aggregation-definition disagreement, not an independent cause.
+
+**Reasoning:** A read-only audit of the 6 scenario fixtures found that Case 2's `distinct` (sql_diff) and `aggregation` (definition_diff) findings both describe one SQL fact — source A uses `COUNT(DISTINCT customer_id)`, source B uses `COUNT(customer_id)` — surfaced twice by two different tools rather than representing two independent causes. Left unresolved, this double-counts the same root cause in reconciliation. This is structurally the same kind of precedence rule as Day 4's self-consistency suppression (a `SelfConsistencyIssue` suppressing the matching cross-source `DefinitionDifference`), applied to a second category pair: one finding is the authoritative account of a fact, the other is a redundant restatement of it from a different angle, and only the authoritative one should reach reconciliation.
+
+**Implementation:** `assemble_structural_and_definitional_evidence(sql_differences, definition_differences)` in `src/self_consistency.py`, with the "same underlying fact" test in `_same_count_distinct_fact` (same file). **This decision was recorded here before any enforcing code existed** — a Day 5, Task 1 verification pass found the rule had been treated as real infrastructure across planning conversations despite having zero implementation anywhere in the codebase; Task 1b (`tests/test_structural_definitional_precedence.py`) built and proved it against a real Case 2 collision and a constructed over-fire case (a DISTINCT toggle paired with an unrelated aggregation-function change) before decision 11's Shapley-averaging engine was allowed to depend on it. Lesson for future decisions in this log: a decision entry describes an intent, not a guarantee that code exists — cross-check the implementation pointer, don't assume one.
+
+## 11. Attribution method: pairwise averaging replaces fixed-order sequential subtraction
+
+**Decision:** For any pair of remaining causes (after Day 4's self-consistency suppression and decision 10's distinct/aggregation suppression) that could plausibly act on overlapping rows, Day 5's reconciliation math computes both isolated counterfactual effects (each cause measured with the other held first at source A's setting, then at source B's setting) and attributes the average of the two as that cause's dollar impact — not a single fixed-order sequential subtraction. This applies uniformly to every remaining pair, without first attempting to detect whether the pair actually overlaps on real rows. Overlap-detection-before-averaging (to skip the extra counterfactual query when two causes are provably independent) is deferred to Build 3, to be revisited only if query cost at 20-30 scenarios makes it worthwhile — not built speculatively now against 6 scenarios where the extra query cost is negligible.
+
+**Reasoning:** Real-execution testing (not static SQL reading) against synthetic row-level data for Case 2 and Case 3 confirmed genuine interaction in both — Case 2's excluded_statuses effect measured 2 under DISTINCT aggregation vs. 3 under non-distinct COUNT (driven by duplicate rows on the status boundary); Case 3's naive additive sum (850.0) missed the true reconciled value (450.0) by exactly 400, one overlap row's amount double-counted because it was excludable by two different mechanisms (date filter on one side, status filter on the other) that sequential subtraction cannot distinguish without either double-counting or dropping it. With exactly two causes per interacting pair, averaging both orderings is the exact Shapley-value solution, not an approximation, so there is no accuracy cost to always applying it. The earlier "definitional differences resolved before structural differences" fixed order (decision pending, chat-only, never committed to this log) is abandoned as empirically unsupported: every confirmed interaction found so far is definitional-vs-definitional, not definitional-vs-structural, so the original rule was never actually tested against a case where it would matter. Scope caveat, stated explicitly to avoid overclaiming: interaction has been confirmed only for definitional-vs-definitional pairs (aggregation-vs-excluded_statuses in Case 2, date_field-vs-excluded_statuses in Case 3). Definitional-vs-structural interaction (e.g., a join-type difference interacting with a definitional filter) remains untested, not ruled out — none of the 6 current fixtures happen to pair a definitional cause with a structural one on overlapping rows. This method should be re-verified, not assumed to generalize, once Build 3 authors scenarios that create that pairing. General n>2 cause interaction (requiring full Shapley averaging across more than two orderings) is also untested and deferred to Build 3 for the same reason — no current fixture has 3+ interacting causes.
+
+## 12. Precedence rule: sql_diff's `date_field` finding suppressed in favor of definition_diff's `date_field` finding
+
+**Decision:** When `sql_diff`'s `date_field` category and `definition_diff`'s `date_field` field trace to the same underlying date-column swap (Case 3: source A uses `order_date`, source B uses `created_at`), the `date_field` SQLStructuralDifference is suppressed in favor of the `date_field` DefinitionDifference. The mechanical structural finding is a downstream restatement of the business-meaning definitional finding, not an independent cause.
+
+**Reasoning — precedence direction, reasoned explicitly rather than assumed symmetric with decision 10:** Decision 10 kept the business-declared `aggregation` finding (`count_distinct` vs. `count`, a human-authored config choice) over the mechanical `distinct` toggle it produces as a byproduct. The same question had to be asked here, not assumed to transfer automatically: does the `date_field` DefinitionDifference carry the same kind of independent, human-authored information the `aggregation` finding did in decision 10, or is it just a second mechanical restatement with extra steps? Checked directly: when both sides declare their `date_field` (the fully-symmetric case with decision 10 — both `source="declared"`, `confidence="high"`), the definitional finding states an intentional analyst choice ("this dashboard reports by order date, that one by record-creation date") — exactly the kind of business-meaning explanation decision 10 judged more valuable to a human reader than a bare structural fact. Case 3 itself is the asymmetric case — B has no declared definition, so its `date_field` value is inferred straight from the same SQL `sql_diff` already parsed, and the field's overall `source`/`confidence` is capped to `"inferred"`/`"medium"` by `diff_definitions`'s weakest-link rule (`src/definition_diff.py`). The suppression rule is nonetheless applied uniformly regardless of confidence, matching decision 10's own rule (which also does not gate on confidence) and keeping one consistent rule per category pair rather than two. Caveat, stated explicitly rather than left implicit: this has been proven only at `confidence="medium"` (Case 3, and the constructed over-fire case below); a `confidence="low"` inferred `date_field` (ambiguous SQL, multiple or zero date-like columns) suppressing an always-mechanically-correct structural finding is untested and could plausibly warrant the opposite call, since the structural finding cannot be wrong about what the SQL literally does, while a low-confidence guess can. Flagged for the Build 3 audit below, not resolved here.
+
+**Reasoning — dollar-value handling, checked against the Case 7 lesson rather than assumed safe:** Day 7 Part A (this same build day) found that suppressing a finding can silently discard a real, separate dollar contribution if the suppressed finding represented an independent, additional correction step (Case 7: self-consistency correction, then a further, separate cross-source correction — two sequential deltas that had to be summed). This collision was checked against that exact risk and found NOT to have it: unlike Case 7's two sequential corrections, `sql_diff`'s `date_field` finding and `definition_diff`'s `date_field` finding, when they trace to the same fact, describe the *same single* SQL mutation (swap the date column) — not two chained ones. `construct_corrected_query` applied once, using the surviving `DefinitionDifference`, already performs the complete correction; there is no second, independent dollar-bearing step to fold in. Verified directly: Case 3's `ReconciliationLineItem` for `date_field`, computed the normal way after suppression, reproduces exactly the same dollar figure (-400.0, negated from Day 5 Task 2's committed +400.0) that was already proven correct before this decision existed — nothing is missing.
+
+**Pattern note — third occurrence of the same class of gap:** This is the third time this project has discovered two independent tools producing findings that trace to one underlying fact, with no suppression rule reconciling them, only after building further downstream logic that depended on the evidence being non-redundant: Day 4's self-consistency-vs-cross-source collision (a `SelfConsistencyIssue` and a `DefinitionDifference` both describing one source's own field), decision 10's `distinct`-vs-`aggregation` collision, and now this `date_field`-vs-`date_field` collision, all found by different downstream work (Day 4 Part 2's own precedence rule, a Case 2 audit before decision 10's engine was trusted, and Day 7 Task 1's `ReconciliationLineItem` assembly, respectively) rather than by deliberately searching for them. **Forward note:** a systematic audit of every `SQLStructuralDifference` category against every `DefinitionDifference` field for this same risk should happen before Build 3's larger scenario set is authored, rather than continuing to discover these one fixture at a time — the categories not yet audited this way are `filter`, `distinct` (audited, decision 10), `join_type`, `aggregation` (audited, decision 10), `date_field` (audited, this decision), `grouping`, and `other`.
+
+**Implementation:** `_same_date_field_fact` and the extended `assemble_structural_and_definitional_evidence`, both in `src/self_consistency.py` — the same function decision 10 lives in, extended rather than duplicated, since both are "an sql_diff structural finding collides with a definition_diff definitional finding" instances of one general shape. "Same underlying fact" is defined precisely, mirroring `_same_count_distinct_fact`'s precision standard: not mere category co-presence, but a side-matched exact equality between the structural finding's own referenced columns (parsed from its snippet text via sqlglot, requiring exactly one unambiguous column per side) and the definitional finding's own declared/inferred values. Proven against the real Case 3 collision (`test_case_3_date_field_suppressed_excluded_statuses_survives`) and a constructed over-fire case where a structural finding references two ambiguous date columns on one side while the definitional finding differs on a completely unrelated column pair (`test_does_not_over_fire_on_unrelated_date_field_findings`), both in `tests/test_structural_definitional_precedence.py` — built and proven before being relied upon, unlike decision 10's own history.
