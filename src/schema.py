@@ -51,7 +51,27 @@ class SelfConsistencyIssue(BaseModel):
     The same convention applies to ReconciliationLineItem.dollar_impact
     once Day 7 populates it from cross-source causes too, so every cause's
     dollar_impact can be summed directly against known_gap without a
-    separate sign-flip step per cause type."""
+    separate sign-flip step per cause type.
+
+    Suppressed-cause folding (Build 1, Day 7 Task 1, Part A):
+    assemble_definitional_evidence's precedence rule removes a cross-source
+    DefinitionDifference from definition_differences when a
+    SelfConsistencyIssue exists on the same field, since reporting both
+    would double-report the same underlying fact. That removal is a
+    REPORTING decision, not a dollar-value decision -- the suppressed
+    difference's dollar contribution is still real and must not vanish.
+    When a SelfConsistencyIssue's field had a cross-source difference
+    suppressed on its account, dollar_impact (as returned by
+    assemble_definitional_evidence_with_dollar_impacts,
+    src/self_consistency.py) is the SUM of two signed components, both
+    computed under the exact convention above: the self-consistency
+    correction itself, plus the further correction from "this source's own
+    declared value" to "the other source's declared value" on that same
+    field. A reader must not assume dollar_impact here reflects only "this
+    source's own SQL bug" -- it may also carry a real cross-source
+    definitional difference that was structurally suppressed from
+    definition_differences to avoid double-reporting it, not to discard its
+    dollar value."""
 
     source: Literal["a", "b"]
     declared_field: str
