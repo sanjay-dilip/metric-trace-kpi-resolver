@@ -148,9 +148,12 @@ def compute_self_consistency_dollar_impacts(
 
     Directional sanity-check finding, worth recording honestly rather than
     smoothing over: Case 4's dollar_impact (+200.0) has the same sign as
-    Case 4's known_gap (+11500.0), so summing it alone shrinks the
-    known-gap-vs-explained-sum distance (11500.0 -> 11300.0), matching the
-    naive intuition that "this cause explains part of the gap." Case 7's
+    Case 4's known_gap (+200.0, recalibrated to real seed execution by
+    Decision 13's resolution -- Build 1, Day 7, Task 3; it was a
+    mismatched-scale +11500.0 when this paragraph was first written), so
+    summing it alone fully closes the known-gap-vs-explained-sum distance
+    (200.0 -> 0.0), matching the naive intuition that "this cause explains
+    the gap" exactly, not just partially. Case 7's
     dollar_impact (-100.0) does NOT share known_gap's sign (+200.0), so
     summing it alone GROWS that distance (200.0 -> 300.0) rather than
     shrinking it. This is not a convention error: Case 7's self-consistency
