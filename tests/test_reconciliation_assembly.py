@@ -49,7 +49,9 @@ def _seed_paths(scenario):
 def test_case_1_single_cause_join_type():
     """Case 1's lone join_type SQLStructuralDifference, no interaction, no
     self-consistency issues -- single_cause_attribution, sign-oriented to
-    known_gap (+3400.0), so the +300.0 line item shares its sign."""
+    known_gap (+300.0, recalibrated to real seed execution -- Decision 13's
+    resolution, Build 1 Day 7 Task 3), so the +300.0 line item shares its
+    sign and in fact fully accounts for it."""
     db_a, db_b = _seed_paths(CASE_1_JOIN_TYPE)
     sql_diffs = diff_sql(parse_sql(CASE_1_JOIN_TYPE.source_a.sql), parse_sql(CASE_1_JOIN_TYPE.source_b.sql))
     dd, sci = assemble_definitional_evidence_with_dollar_impacts(
@@ -102,7 +104,7 @@ def test_case_2_shapley_interacting_pair():
     assert excluded_item.dollar_impact == 2.5  # -(-2.5)
     assert aggregation_item.computed_by == "shapley_pair_attribution"
     assert aggregation_item.dollar_impact == -1.5  # -(1.5)
-    assert sum(item.dollar_impact for item in items) == 1.0  # -(4 - 5), same sign as known_gap (+1250.0)
+    assert sum(item.dollar_impact for item in items) == 1.0  # -(4 - 5), same sign as known_gap (+1.0)
     assert CASE_2_MULTI_CAUSE.known_gap > 0
 
 

@@ -202,7 +202,12 @@ def test_case_4_dollar_impact_unaffected_by_suppressed_cause_folding():
     """Case 4 has no suppressed cross-source counterpart (previous test), so
     assemble_definitional_evidence_with_dollar_impacts must produce the
     exact same dollar_impact as the unwrapped compute_self_consistency_dollar_impacts
-    (200.0) -- folding a nonexistent suppressed cause must be a no-op."""
+    (200.0) -- folding a nonexistent suppressed cause must be a no-op. Since
+    Build 1, Day 7, Task 3 recalibrated Case 4's known_gap to real seed
+    execution (Decision 13's resolution), this dollar_impact now equals
+    known_gap exactly too -- re-checked explicitly, not assumed to still
+    hold from the pre-recalibration figure (200.0 vs. a mismatched-scale
+    11500.0 known_gap)."""
     db_a = str(DATA_SAMPLE_DIR / "case_04_governance_drift_a.duckdb")
     db_b = str(DATA_SAMPLE_DIR / "case_04_governance_drift_b.duckdb")
 
@@ -213,6 +218,7 @@ def test_case_4_dollar_impact_unaffected_by_suppressed_cause_folding():
     assert dd == []
     assert len(sci) == 1
     assert sci[0].dollar_impact == 200.0  # unchanged from compute_self_consistency_dollar_impacts alone
+    assert sci[0].dollar_impact == CASE_4_GOVERNANCE_DRIFT.known_gap
 
 
 def test_case_7_dollar_impact_combines_self_consistency_and_suppressed_cross_source():

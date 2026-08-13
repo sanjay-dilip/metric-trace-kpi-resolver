@@ -15,25 +15,21 @@ the same claim:
    cause was found.
 
 2. Whether unexplained_residual is actually SMALL is a separate, genuine
-   finding, investigated case by case below -- and it is NOT small for
-   Cases 1-4, a real, traced discrepancy, not force-fit into looking
-   "near zero." Root cause: Scenario.known_gap is explicitly documented
-   (src/scenario.py) as "the hand-authored, independently-asserted
-   expected value -- it is not derived from executing against
-   seed_table." Cases 1-5's reported_value_a/reported_value_b were
-   authored at a realistic dashboard scale (hundreds of thousands), while
-   their seed data was built at a much smaller, independently-chosen scale
-   for tractable hand-verification (tens to low thousands) -- the two were
-   never calibrated to match. Case 7 is the one exception: its
-   reported_value_a/b were deliberately set equal to real seed-execution
-   figures (see CASE_7_PRECEDENCE_CONFLICT's own comment in
-   tests/fixtures/scenarios.py), so it is the only non-trivial case where
-   the residual is actually near zero. This is a real, pre-existing
-   design gap in the 7 fixtures' calibration, first surfaced here because
-   this is the first point in the project where seed-execution dollar
-   figures are compared directly against known_gap rather than against
-   each other -- documented as a known, named gap (see the case-by-case
-   tests below), not silently smoothed over."""
+   claim, checked case by case below. Originally (Day 7 Task 2) it was NOT
+   small for Cases 1-4 -- a real, traced discrepancy, not a bug: back then
+   Cases 1-5's reported_value_a/reported_value_b were hand-authored at a
+   realistic dashboard scale (hundreds of thousands) while their seed data
+   was built at a much smaller, independently-chosen scale for tractable
+   hand-verification, and the two had never been calibrated to match
+   (Decision 13, docs/decisions.md). Build 1, Day 7, Task 3 resolved that
+   gap: Cases 1-6's reported_value_a/reported_value_b/known_gap were
+   recalibrated to real execution of each scenario's as-written SQL
+   against its own seed data (Case 5 and Case 6 turned out to already be
+   correctly calibrated -- verified, not assumed -- so their numbers did
+   not change). Case 7 was already calibrated (Day 4 close-out) and was
+   left untouched. Every fixture now shows a residual of 0.0% except Case
+   5, whose 100% residual is the deliberate design intent (no findable
+   cause exists) -- confirmed case by case below, not just asserted."""
 
 import math
 
@@ -89,56 +85,54 @@ def test_returns_a_fully_populated_investigation_evidence_instance():
     assert isinstance(evidence.unexplained_residual, float)
 
 
-def test_case_1_causes_correctly_signed_but_residual_is_large_not_near_zero():
-    """Case 1's real cause (join_type, +300.0) shares known_gap's sign
-    (+3400.0), confirming the cause is correctly identified and directed --
-    but the residual (3100.0) is NOT near zero. This is the documented
-    scale-mismatch gap (module docstring), not a bug: verified directly
-    that reported_value_a/b (152300.0/148900.0) are two orders of
-    magnitude larger than what the seed data's join-type delta (600.0 vs
-    300.0) can reconcile against."""
+def test_case_1_fully_reconciles_after_recalibration():
+    """Case 1's real cause (join_type) is +300.0, and known_gap is now
+    +300.0 too (recalibrated to real seed execution -- Decision 13's
+    resolution, Build 1 Day 7 Task 3; it was a mismatched-scale +3400.0
+    hand-typed figure before). The single found cause now fully accounts
+    for the gap: residual is exactly 0.0, not merely "near" zero."""
     evidence = assemble_investigation_evidence(CASE_1_JOIN_TYPE)
     total = sum(item.dollar_impact for item in evidence.reconciliation)
 
     assert len(evidence.reconciliation) == 1
-    assert (total > 0) == (CASE_1_JOIN_TYPE.known_gap > 0)  # correctly directed
-    assert evidence.unexplained_residual == 3100.0  # NOT near zero -- real, traced, documented gap
-    assert abs(evidence.unexplained_residual) > abs(total)  # residual dwarfs the found cause
+    assert total == CASE_1_JOIN_TYPE.known_gap == 300.0
+    assert evidence.unexplained_residual == 0.0
 
 
-def test_case_2_causes_correctly_signed_but_residual_is_large_not_near_zero():
-    """Same scale-mismatch finding as Case 1, for the Shapley-pair case."""
+def test_case_2_fully_reconciles_after_recalibration():
+    """Same recalibration result as Case 1, for the Shapley-pair case:
+    the two interacting causes sum to +1.0, matching the recalibrated
+    known_gap (+1.0, was a mismatched-scale +1250.0) exactly."""
     evidence = assemble_investigation_evidence(CASE_2_MULTI_CAUSE)
     total = sum(item.dollar_impact for item in evidence.reconciliation)
 
     assert len(evidence.reconciliation) == 2
-    assert (total > 0) == (CASE_2_MULTI_CAUSE.known_gap > 0)
-    assert evidence.unexplained_residual == 1249.0
-    assert abs(evidence.unexplained_residual) > abs(total)
+    assert total == CASE_2_MULTI_CAUSE.known_gap == 1.0
+    assert evidence.unexplained_residual == 0.0
 
 
-def test_case_3_causes_correctly_signed_but_residual_is_large_not_near_zero():
-    """Same scale-mismatch finding as Case 1/2, for the decision-12-fixed
-    Shapley-pair case."""
+def test_case_3_fully_reconciles_after_recalibration():
+    """Same recalibration result as Case 1/2, for the decision-12-fixed
+    Shapley-pair case: sum is +100.0, matching the recalibrated known_gap
+    (+100.0, was a mismatched-scale +5500.0) exactly."""
     evidence = assemble_investigation_evidence(CASE_3_HYBRID_FALLBACK)
     total = sum(item.dollar_impact for item in evidence.reconciliation)
 
     assert len(evidence.reconciliation) == 2
-    assert (total > 0) == (CASE_3_HYBRID_FALLBACK.known_gap > 0)
-    assert evidence.unexplained_residual == 5400.0
-    assert abs(evidence.unexplained_residual) > abs(total)
+    assert total == CASE_3_HYBRID_FALLBACK.known_gap == 100.0
+    assert evidence.unexplained_residual == 0.0
 
 
-def test_case_4_causes_correctly_signed_but_residual_is_large_not_near_zero():
-    """Same scale-mismatch finding as Case 1/2/3, for the self-consistency-
-    only case."""
+def test_case_4_fully_reconciles_after_recalibration():
+    """Same recalibration result as Case 1/2/3, for the self-consistency-
+    only case: +200.0 matches the recalibrated known_gap (+200.0, was a
+    mismatched-scale +11500.0) exactly."""
     evidence = assemble_investigation_evidence(CASE_4_GOVERNANCE_DRIFT)
     total = sum(item.dollar_impact for item in evidence.reconciliation)
 
     assert len(evidence.reconciliation) == 1
-    assert (total > 0) == (CASE_4_GOVERNANCE_DRIFT.known_gap > 0)
-    assert evidence.unexplained_residual == 11300.0
-    assert abs(evidence.unexplained_residual) > abs(total)
+    assert total == CASE_4_GOVERNANCE_DRIFT.known_gap == 200.0
+    assert evidence.unexplained_residual == 0.0
 
 
 def test_case_5_residual_equals_known_gap_by_design():
@@ -147,8 +141,12 @@ def test_case_5_residual_equals_known_gap_by_design():
     definitional, structural, or self-consistency cause exists within this
     tool's scope, per its own fixture docstring. Confirmed here: zero line
     items, and unexplained_residual equals known_gap exactly (3800.0) --
-    the entire gap is, correctly, unexplained. This is the design intent,
-    not a bug if it happens -- and it does happen, exactly as intended."""
+    the entire gap is, correctly, unexplained. Unlike Cases 1-4, Case 5's
+    reported_value_a/b were already correctly calibrated when checked
+    during Day 7 Task 3's recalibration (executed seed values matched the
+    hand-typed figures exactly), so this fixture's numbers are unchanged
+    -- this is the design intent, not a bug, and it holds both before and
+    after the recalibration."""
     evidence = assemble_investigation_evidence(CASE_5_UNEXPLAINED_RESIDUAL)
 
     assert evidence.reconciliation == []
@@ -161,7 +159,9 @@ def test_case_5_residual_equals_known_gap_by_design():
 def test_case_6_negative_control_zero_impact_zero_residual():
     """Case 6: no declared definitions, identical SQL on both sides,
     known_gap == 0.0. No fabricated causes, no phantom gap -- total impact
-    and residual are both exactly 0.0."""
+    and residual are both exactly 0.0. Like Case 5, Case 6's numbers were
+    already correctly calibrated before Day 7 Task 3 (trivially, since
+    both sides are 0 either way) and are unchanged by it."""
     evidence = assemble_investigation_evidence(CASE_6_NEGATIVE_CONTROL)
     total = sum(item.dollar_impact for item in evidence.reconciliation)
 
@@ -171,15 +171,16 @@ def test_case_6_negative_control_zero_impact_zero_residual():
     assert CASE_6_NEGATIVE_CONTROL.known_gap == 0.0
 
 
-def test_case_7_residual_is_near_zero_fully_explained():
-    """Case 7 is the one exception to the Case 1-4 scale-mismatch finding:
-    its reported_value_a/b were deliberately set equal to real
+def test_case_7_residual_is_zero_fully_explained():
+    """Case 7 was already calibrated before Day 7 Task 3 (Day 4
+    close-out): its reported_value_a/b were deliberately set equal to real
     seed-execution figures (300.0/100.0, see CASE_7_PRECEDENCE_CONFLICT's
-    own comment in tests/fixtures/scenarios.py), so its self-consistency
+    own comment in tests/fixtures/scenarios.py) when the fixture was
+    built, so it was untouched by this recalibration. Its self-consistency
     (+ folded suppressed cross-source) cause fully explains known_gap with
-    an exact zero residual -- proof the reconciliation math is correct when
-    the fixture's scale is actually calibrated to match, not just correctly
-    signed."""
+    an exact zero residual, the same result Cases 1-4 now also show post-
+    recalibration -- confirming the reconciliation math was correct all
+    along; only the other 4 fixtures' calibration was off."""
     evidence = assemble_investigation_evidence(CASE_7_PRECEDENCE_CONFLICT)
     total = sum(item.dollar_impact for item in evidence.reconciliation)
 
