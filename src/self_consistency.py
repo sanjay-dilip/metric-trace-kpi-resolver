@@ -14,10 +14,13 @@ directly rather than duplicating inference or comparison logic.
 No LLM calls anywhere: this is rule-based comparison against already-inferred
 SQL structure, same as Day 3 Part 2.
 
-dollar_impact is NOT computed here. SelfConsistencyIssue requires it as a
-non-optional field, so every issue built here uses dollar_impact=0.0 as an
-explicit placeholder -- actual dollar-impact computation is Day 5's
-reconciliation math, not this module's job.
+check_self_consistency itself still never computes dollar_impact -- every
+issue it builds uses dollar_impact=0.0 as an explicit placeholder, since it
+is a purely structural/symbolic comparison (declared value vs.
+inferred-from-SQL value) with no SQL execution. Real dollar-impact
+computation is compute_self_consistency_dollar_impacts's job (Day 6, Task
+2, added below) -- a separate, execution-based function, not a change to
+check_self_consistency's own contract.
 
 Day 4 Part 2 adds assemble_definitional_evidence, which orchestrates this
 module's check_self_consistency together with src.definition_diff's
