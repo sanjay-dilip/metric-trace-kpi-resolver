@@ -215,6 +215,112 @@ def assemble_definitional_evidence(
     return definition_differences, self_consistency_issues
 
 
+def assemble_definitional_evidence_with_dollar_impacts(
+    source_a: DashboardSource,
+    source_b: DashboardSource,
+    seed_db_path_a: str,
+    seed_db_path_b: str,
+) -> tuple[list[DefinitionDifference], list[SelfConsistencyIssue]]:
+    """Build 1, Day 7 Task 1, Part A. Layers execution-based dollar-impact
+    computation on top of assemble_definitional_evidence, WITHOUT changing
+    that function's own signature or behavior (kept structural/pure so every
+    existing caller and test of assemble_definitional_evidence is
+    unaffected) -- "the surrounding orchestration" this task's brief refers
+    to, rather than a modification to assemble_definitional_evidence itself.
+
+    The gap this closes: assemble_definitional_evidence's precedence rule
+    correctly suppresses a cross-source DefinitionDifference when a
+    SelfConsistencyIssue exists on the same field, but the suppressed
+    finding's dollar value was previously discarded entirely -- confirmed
+    concretely on Case 7 (Build 1, Day 6 close-out investigation): the
+    suppressed excluded_statuses cross-source difference is worth a real,
+    execution-verified 300.0, not "unexplained."
+
+    For each SelfConsistencyIssue whose field was suppressed here (i.e. the
+    field appears in diff_definitions's raw output but NOT in this
+    function's returned definition_differences), this folds the suppressed
+    difference's dollar contribution into that SAME SelfConsistencyIssue's
+    dollar_impact, rather than discarding it:
+
+      1. Compute the self-consistency dollar_impact as before
+         (compute_self_consistency_dollar_impacts, Day 6 close-out): fixes
+         the source's own SQL to match its own declared definition.
+      2. From THAT already-corrected SQL, apply the suppressed
+         DefinitionDifference itself (construct_corrected_query again,
+         chained) to reach the OTHER side's declared value for the same
+         field -- target_value is source_b_value when the issue is on side
+         "a", source_a_value when the issue is on side "b" (the "other
+         side" from this issue's own side, not construct_corrected_query's
+         default assumption).
+      3. Sign the resulting delta with the SAME per-side convention as step
+         1 (SelfConsistencyIssue.dollar_impact docstring, src/schema.py):
+         negate the raw (corrected - original) delta for a source="a"
+         issue, use it as-is for source="b". This is NOT a different rule
+         invented for the suppressed piece -- it is the identical
+         known_gap-relative convention applied to a second, chained
+         correction step, which is exactly why simply ADDING the two signed
+         pieces together is valid: both terms already point in known_gap's
+         direction before they are summed.
+      4. Add that signed suppressed-cause delta onto the self-consistency
+         dollar_impact from step 1.
+
+    Concretely, on Case 7: self-consistency alone gives -100.0 (A's own SQL
+    vs. A's own declaration). The suppressed cross-source piece (A's own
+    declaration vs. B's declaration, applied to the already-self-consistency-
+    corrected SQL) gives +300.0. Combined: -100.0 + 300.0 = +200.0 -- which
+    equals Case 7's known_gap exactly, because excluded_statuses is the
+    ONLY differing field anywhere in Case 7's evidence (confirmed: no other
+    DefinitionDifference, SQLStructuralDifference, or SelfConsistencyIssue
+    exists for this scenario), so this one field alone must and does fully
+    explain the entire gap.
+
+    Consequence worth stating plainly: a SelfConsistencyIssue.dollar_impact
+    returned by THIS function may represent the sum of a self-consistency
+    correction and whatever cross-source difference it suppressed on the
+    same field -- not the self-consistency correction alone (that narrower
+    meaning is what compute_self_consistency_dollar_impacts, called without
+    this wrapper, still returns). A reader consuming this function's output
+    should not assume dollar_impact reflects only "this source's own SQL
+    bug"; it may also carry a real cross-source definitional difference
+    that got structurally suppressed from definition_differences to avoid
+    reporting it twice.
+
+    seed_db_path_a/seed_db_path_b are the caller's responsibility to
+    resolve, same as compute_self_consistency_dollar_impacts.
+    """
+    definition_differences, _ = assemble_definitional_evidence(source_a, source_b)
+    raw_cross_source_differences = diff_definitions(source_a, source_b)
+    surviving_fields = {diff.field for diff in definition_differences}
+    suppressed_by_field = {
+        diff.field: diff for diff in raw_cross_source_differences if diff.field not in surviving_fields
+    }
+
+    resolved_issues: list[SelfConsistencyIssue] = []
+    for side, source, seed_db_path in (("a", source_a, seed_db_path_a), ("b", source_b, seed_db_path_b)):
+        if source.declared_definition is None:
+            continue
+        for issue in compute_self_consistency_dollar_impacts(source, side, seed_db_path):
+            suppressed = suppressed_by_field.get(issue.declared_field)
+            if suppressed is None:
+                resolved_issues.append(issue)
+                continue
+
+            self_consistency_corrected_sql = construct_corrected_query(source.sql, issue)
+            other_side_target = suppressed.source_b_value if side == "a" else suppressed.source_a_value
+            cross_source_corrected_sql = construct_corrected_query(
+                self_consistency_corrected_sql, suppressed, target_value=other_side_target
+            )
+            raw_delta = single_cause_attribution(
+                seed_db_path, self_consistency_corrected_sql, cross_source_corrected_sql
+            )
+            suppressed_impact = -raw_delta if side == "a" else raw_delta
+
+            combined_impact = issue.dollar_impact + suppressed_impact
+            resolved_issues.append(issue.model_copy(update={"dollar_impact": combined_impact}))
+
+    return definition_differences, resolved_issues
+
+
 _DISTINCT_SUFFIX = "_distinct"
 
 
