@@ -7,9 +7,14 @@ Also covers compute_self_consistency_dollar_impacts (Build 1, Day 6, Task
 2): execution-based dollar_impact computation, replacing the Day 4
 placeholder 0.0 for Case 4 and Case 7's self-consistency issues."""
 
+import os
+import tempfile
+
+import duckdb
 import pytest
 
 from config import DATA_SAMPLE_DIR
+from src.scenario import DashboardSource, DeclaredDefinition
 from src.self_consistency import check_self_consistency, compute_self_consistency_dollar_impacts
 from tests.fixtures.scenarios import (
     CASE_1_JOIN_TYPE,
@@ -67,12 +72,13 @@ def test_all_scenarios_run_without_error_where_declared_definition_present():
             check_self_consistency(source, side)
 
 
-def test_case_4_dollar_impact_matches_expected_200():
+def test_case_4_dollar_impact_is_signed_positive_200():
     """Case 4's self-consistency issue: A's SQL as-written excludes only
-    cancelled (300.0), but A declares excluding cancelled+refunded
-    (100.0 if corrected). The Day 4 close-out already confirmed this
-    200.0 dollar effect by hand; this proves compute_self_consistency_dollar_impacts
-    reproduces it mechanically."""
+    cancelled (300.0), but A declares excluding cancelled+refunded (100.0
+    if corrected) -- A's own bug currently INFLATES A's reported number,
+    which inflates known_gap (A - B) the same way, so per the Day 6
+    close-out sign convention (src/schema.py, SelfConsistencyIssue)
+    dollar_impact must be POSITIVE 200.0, not just magnitude 200.0."""
     db = str(DATA_SAMPLE_DIR / "case_04_governance_drift_a.duckdb")
     issues = compute_self_consistency_dollar_impacts(CASE_4_GOVERNANCE_DRIFT.source_a, "a", db)
 
@@ -81,18 +87,19 @@ def test_case_4_dollar_impact_matches_expected_200():
     assert issues[0].dollar_impact == 200.0
 
 
-def test_case_7_dollar_impact_matches_expected_100():
+def test_case_7_dollar_impact_is_signed_negative_100():
     """Case 7's self-consistency issue: A's SQL as-written excludes only
     refunded (300.0), but A declares excluding cancelled only (400.0 if
-    corrected). The Day 4 close-out already confirmed this 100.0 dollar
-    effect by hand; this proves compute_self_consistency_dollar_impacts
-    reproduces it mechanically."""
+    corrected) -- A's own bug currently UNDERSTATES A's reported number
+    relative to its own declaration, which currently SUPPRESSES known_gap
+    (A - B) below what it would be if this cause were fixed, so per the
+    sign convention dollar_impact must be NEGATIVE 100.0."""
     db = str(DATA_SAMPLE_DIR / "case_07_precedence_conflict_a.duckdb")
     issues = compute_self_consistency_dollar_impacts(CASE_7_PRECEDENCE_CONFLICT.source_a, "a", db)
 
     assert len(issues) == 1
     assert issues[0].declared_field == "excluded_statuses"
-    assert issues[0].dollar_impact == 100.0
+    assert issues[0].dollar_impact == -100.0
 
 
 def test_dollar_impact_empty_for_every_other_self_consistent_side():
@@ -114,3 +121,48 @@ def test_dollar_impact_empty_for_every_other_self_consistent_side():
         ("case_04_governance_drift", "a"),
         ("case_07_precedence_conflict", "a"),
     }
+
+
+def test_dollar_impact_sign_flips_for_a_source_b_issue():
+    """None of the 7 committed fixtures produce a self-consistency issue on
+    side B, so the source == "b" branch of compute_self_consistency_dollar_impacts's
+    sign rule (src/schema.py, SelfConsistencyIssue docstring) is otherwise
+    unexercised by any committed test. Constructs a minimal synthetic
+    source/seed pair (a temp DuckDB file, not committed data) where B's SQL
+    excludes MORE statuses than B declares -- B's own bug currently
+    understates B, which per the sign convention should currently INFLATE
+    known_gap (A - B), i.e. dollar_impact must be positive, the same
+    direction single_cause_attribution's raw (corrected - original) delta
+    already points for a source="b" issue (unlike source="a", where the
+    sign must be negated)."""
+    tmp_path = tempfile.mktemp(suffix=".duckdb")
+    con = duckdb.connect(tmp_path)
+    try:
+        con.execute("CREATE TABLE orders (amount DOUBLE, status VARCHAR, order_date DATE)")
+        con.execute(
+            "INSERT INTO orders VALUES "
+            "(100, 'completed', '2024-02-01'), (50, 'cancelled', '2024-02-01'), (30, 'refunded', '2024-02-01')"
+        )
+    finally:
+        con.close()
+
+    try:
+        source_b = DashboardSource(
+            label="finance_query",
+            sql=(
+                "SELECT SUM(amount) AS revenue FROM orders "
+                "WHERE status NOT IN ('cancelled', 'refunded') AND order_date >= '2024-01-01'"
+            ),
+            declared_definition=DeclaredDefinition(
+                date_field="order_date", excluded_statuses=["cancelled"], aggregation="sum"
+            ),
+        )
+
+        issues = compute_self_consistency_dollar_impacts(source_b, "b", tmp_path)
+
+        assert len(issues) == 1
+        assert issues[0].source == "b"
+        assert issues[0].declared_field == "excluded_statuses"
+        assert issues[0].dollar_impact == 30.0  # (130 corrected) - (100 as-written), unflipped for source "b"
+    finally:
+        os.unlink(tmp_path)
