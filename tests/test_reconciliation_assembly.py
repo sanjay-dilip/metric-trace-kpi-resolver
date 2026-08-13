@@ -10,19 +10,16 @@ values, negated per the known_gap sign convention (Day 6 close-out); (2)
 every line item's sign matches its scenario's known_gap sign, per this
 task's own directional-consistency requirement.
 
-Case 3 is deliberately NOT included here: assembling it exposed a real,
-previously undiscovered gap (see test_case_3_raises_on_the_unaddressed_date_field_collision
-below) -- sql_diff's date_field structural finding and definition_diff's
-date_field definitional finding are the same underlying fact for Case 3,
-with no suppression rule for that pairing anywhere in this codebase
-(decision 10, docs/decisions.md, only covers the distinct/aggregation
-collision). Feeding both into assemble_reconciliation_line_items without
-resolving that first would silently double-count the cause -- the function
-correctly raises instead. Building that suppression rule is new,
-separately-scoped work (parallel to decision 10's own history), not
-something this task grew to include."""
-
-import pytest
+Case 3 (Build 1, Day 7, Task 1b): assembling it originally exposed a real,
+previously undiscovered gap -- sql_diff's date_field structural finding and
+definition_diff's date_field definitional finding trace to the same
+underlying fact, with no suppression rule reconciling them (decision 10
+only covered the distinct/aggregation collision). That gap is now decision
+12 (docs/decisions.md), implemented in
+src.self_consistency.assemble_structural_and_definitional_evidence and
+proven in tests/test_structural_definitional_precedence.py. Case 3 is
+included below as a normal, working case now that the collision is
+resolved."""
 
 from config import DATA_SAMPLE_DIR
 from src.definition_diff import diff_definitions
@@ -109,15 +106,16 @@ def test_case_2_shapley_interacting_pair():
     assert CASE_2_MULTI_CAUSE.known_gap > 0
 
 
-def test_case_3_raises_on_the_unaddressed_date_field_collision():
-    """A genuine, previously undiscovered gap surfaced while building this
-    module: sql_diff's date_field SQLStructuralDifference and
-    definition_diff's date_field DefinitionDifference trace to the exact
-    same fact for Case 3 (both describe order_date vs. created_at), and no
-    suppression rule for this pairing exists (decision 10 only covers
-    distinct/aggregation). Feeding both in without resolving that first
-    must raise -- NOT silently double-count the cause by guessing a target
-    value for the structural finding."""
+def test_case_3_shapley_interacting_pair_after_decision_12_suppression():
+    """With decision 12's date_field suppression applied (via
+    assemble_structural_and_definitional_evidence, same as every other
+    caller in this module), the redundant sql_diff date_field finding is
+    gone before this function ever sees it -- date_field and
+    excluded_statuses are Case 3's two genuinely interacting definitional
+    causes, Shapley-attributed and negated per the known_gap convention,
+    reproducing Day 5 Task 2's committed raw figures (400.0, -500.0) with
+    the sign flipped (-400.0, +500.0). The resulting sum shares known_gap's
+    sign, reconciling toward it rather than raising."""
     db_a, db_b = _seed_paths(CASE_3_HYBRID_FALLBACK)
     sql_diffs = diff_sql(
         parse_sql(CASE_3_HYBRID_FALLBACK.source_a.sql), parse_sql(CASE_3_HYBRID_FALLBACK.source_b.sql)
@@ -125,22 +123,35 @@ def test_case_3_raises_on_the_unaddressed_date_field_collision():
     dd, sci = assemble_definitional_evidence_with_dollar_impacts(
         CASE_3_HYBRID_FALLBACK.source_a, CASE_3_HYBRID_FALLBACK.source_b, db_a, db_b
     )
-    assert "date_field" in {d.category for d in sql_diffs}
-    assert "date_field" in {d.field for d in dd}
+    sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
+    assert sql_diffs == []  # decision 12: the redundant date_field structural finding is gone
+    assert {d.field for d in dd} == {"date_field", "excluded_statuses"}
 
     date_field_diff = next(d for d in dd if d.field == "date_field")
     excluded_statuses_diff = next(d for d in dd if d.field == "excluded_statuses")
 
-    with pytest.raises(ValueError, match="date_field"):
-        assemble_reconciliation_line_items(
-            CASE_3_HYBRID_FALLBACK.source_a,
-            CASE_3_HYBRID_FALLBACK.source_b,
-            db_a,
-            sql_diffs,  # deliberately NOT excluding the colliding structural finding
-            dd,
-            sci,
-            interacting_pairs=[(date_field_diff, excluded_statuses_diff)],
-        )
+    items = assemble_reconciliation_line_items(
+        CASE_3_HYBRID_FALLBACK.source_a,
+        CASE_3_HYBRID_FALLBACK.source_b,
+        db_a,
+        sql_diffs,
+        dd,
+        sci,
+        interacting_pairs=[(date_field_diff, excluded_statuses_diff)],
+    )
+
+    assert len(items) == 2
+    date_field_item = next(item for item in items if "date_field" in item.cause)
+    excluded_item = next(item for item in items if "excluded_statuses" in item.cause)
+
+    assert date_field_item.computed_by == "shapley_pair_attribution"
+    assert date_field_item.dollar_impact == -400.0  # -(400.0)
+    assert excluded_item.computed_by == "shapley_pair_attribution"
+    assert excluded_item.dollar_impact == 500.0  # -(-500.0)
+
+    total = sum(item.dollar_impact for item in items)
+    assert total == 100.0
+    assert (total > 0) == (CASE_3_HYBRID_FALLBACK.known_gap > 0)  # reconciles toward known_gap's sign
 
 
 def test_case_4_self_consistency_only():
