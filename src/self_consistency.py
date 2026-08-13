@@ -114,41 +114,60 @@ def compute_self_consistency_dollar_impacts(
     source: DashboardSource, side: Literal["a", "b"], seed_db_path: str
 ) -> list[SelfConsistencyIssue]:
     """Run check_self_consistency, then replace each issue's placeholder
-    dollar_impact with a real, execution-based number (Build 1, Day 6, Task
-    2). For each issue found: construct the corrected SQL that would result
-    if source.sql were fixed to match source's own declared definition
+    dollar_impact with a real, execution-based, SIGNED number (Build 1, Day
+    6 close-out -- supersedes the Day 6 Task 2 unsigned-magnitude version).
+    For each issue found: construct the corrected SQL that would result if
+    source.sql were fixed to match source's own declared definition
     (construct_corrected_query, src/query_mutation.py -- Day 6 Task 1),
     execute both source.sql and the corrected SQL against seed_db_path, and
-    take the magnitude of the difference (single_cause_attribution,
-    src/reconciliation.py -- Day 5 Task 2; no new arithmetic or SQL-variant
-    construction is added here, both are reused as-is).
+    sign the delta per the convention documented on
+    SelfConsistencyIssue.dollar_impact (src/schema.py) -- no new arithmetic:
+    single_cause_attribution (src/reconciliation.py, Day 5 Task 2) still
+    supplies the raw (corrected - original) delta; this function only
+    orients its sign relative to known_gap = reported_value_a -
+    reported_value_b.
 
-    dollar_impact is stored as an UNSIGNED magnitude
-    (abs(single_cause_attribution(...))), not a signed reconciliation
-    contribution. Reasoning: this project's own prior real-execution
-    verification (Day 4 close-out, recorded in CONTEXT.md) describes both
-    Case 4 and Case 7's self-consistency effects as a plain dollar "gap"
-    (200.0 and 100.0 respectively) with no asserted sign convention, and a
-    literal signed corrected-minus-original computation produces a NEGATIVE
-    200.0 for Case 4 while producing a positive 100.0 for Case 7 -- i.e. the
-    two cases' signs would not agree under either fixed signed convention,
-    only the magnitude does. Deciding how a self-consistency issue's dollar
-    effect should be signed within a ReconciliationLineItem relative to
-    known_gap's sign convention (reported_value_a - reported_value_b) is
-    explicitly Day 7's job, not resolved here -- this function only proves
-    the magnitude is real and mechanically reproducible, matching the
-    already-verified 200.0/100.0 figures.
+    Sign derivation, restated concretely (full reasoning lives on
+    SelfConsistencyIssue.dollar_impact): single_cause_attribution returns
+    (corrected - original). For a source-"a" issue, dollar_impact is the
+    NEGATION of that raw delta -- (original - corrected) -- because
+    reducing A's own value (correcting an inflation) reduces known_gap by
+    exactly that amount. For a source-"b" issue, dollar_impact is the raw
+    delta AS-IS -- (corrected - original) -- because known_gap subtracts B,
+    so increasing B's value (correcting an inflation on B's side) reduces
+    known_gap the same way, with the opposite sign relative to raw.
 
     seed_db_path is the caller's responsibility to resolve (e.g. from
     Scenario.seed_table + side, per scripts/build_seed_data.py's "_a"/"_b"
     per-side file convention) -- this function only executes SQL against
     whatever path it is given, same as single_cause_attribution itself.
+
+    Directional sanity-check finding, worth recording honestly rather than
+    smoothing over: Case 4's dollar_impact (+200.0) has the same sign as
+    Case 4's known_gap (+11500.0), so summing it alone shrinks the
+    known-gap-vs-explained-sum distance (11500.0 -> 11300.0), matching the
+    naive intuition that "this cause explains part of the gap." Case 7's
+    dollar_impact (-100.0) does NOT share known_gap's sign (+200.0), so
+    summing it alone GROWS that distance (200.0 -> 300.0) rather than
+    shrinking it. This is not a convention error: Case 7's self-consistency
+    bug genuinely suppresses the observed gap below what it would be if
+    fixed in isolation (A's as-written 300.0 vs A's own-declaration-corrected
+    400.0 -- correcting only this cause would widen the A-vs-B gap from
+    200.0 to 300.0, not narrow it). Nothing else in Case 7's evidence set
+    currently explains the remaining difference (the cross-source
+    excluded_statuses DefinitionDifference is precedence-suppressed in
+    favor of this very issue), so a correct Day 7 accounting would need
+    unexplained_residual = 300.0 here (200.0 = -100.0 + 300.0), which is
+    algebraically valid even though it exceeds known_gap's own magnitude --
+    a signed decomposition permits that whenever some cause's contribution
+    opposes the net direction of the others.
     """
     issues = check_self_consistency(source, side)
     resolved_issues = []
     for issue in issues:
         corrected_sql = construct_corrected_query(source.sql, issue)
-        impact = abs(single_cause_attribution(seed_db_path, source.sql, corrected_sql))
+        raw_delta = single_cause_attribution(seed_db_path, source.sql, corrected_sql)
+        impact = -raw_delta if issue.source == "a" else raw_delta
         resolved_issues.append(issue.model_copy(update={"dollar_impact": impact}))
     return resolved_issues
 
