@@ -23,6 +23,23 @@ passing the SQL through unmodified or guessing at a correction -- a gap in
 coverage must be visible immediately, not produce a wrong corrected-query
 result downstream.
 
+Note on `distinct` specifically: decision 10 (docs/decisions.md) suppresses
+a `distinct` SQLStructuralDifference in favor of the corresponding
+`aggregation` DefinitionDifference when both trace to the same underlying
+COUNT/COUNT DISTINCT fact (assemble_structural_and_definitional_evidence,
+src/self_consistency.py). That suppression is conditional, not universal --
+it does not make `distinct` unreachable here. The already-committed
+over-fire test (tests/test_structural_definitional_precedence.py::
+test_does_not_over_fire_on_unrelated_distinct_and_aggregation_findings)
+proves a genuinely different-function case (COUNT(DISTINCT customer_id) vs
+MAX(customer_id)) is NOT suppressed and does reach downstream evidence with
+its `distinct` category intact. Confirmed live: feeding that exact
+SQLStructuralDifference into construct_corrected_query raises the expected
+ValueError, not a silent mishandling. `distinct` staying on the uncovered
+list is therefore still the correct call, but not for the reason "decision
+10 already filters it out before it gets here" -- that reasoning only holds
+for the same-fact case.
+
 Uses sqlglot for the actual mutation (parse, modify the relevant AST node,
 regenerate SQL), the same reliability reasons src/sql_parser.py and
 src/sql_diff.py are built on sqlglot rather than string manipulation.
