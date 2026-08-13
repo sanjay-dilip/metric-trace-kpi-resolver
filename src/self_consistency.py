@@ -50,6 +50,8 @@ src.sql_diff itself, so co-locating it here introduces no import cycle.
 from typing import Literal
 
 from src.definition_diff import _values_equal, diff_definitions, infer_definition_from_sql
+from src.query_mutation import construct_corrected_query
+from src.reconciliation import single_cause_attribution
 from src.schema import DefinitionDifference, SelfConsistencyIssue, SQLStructuralDifference
 from src.scenario import DashboardSource
 from src.sql_parser import parse_sql
@@ -106,6 +108,49 @@ def check_self_consistency(
             )
         )
     return issues
+
+
+def compute_self_consistency_dollar_impacts(
+    source: DashboardSource, side: Literal["a", "b"], seed_db_path: str
+) -> list[SelfConsistencyIssue]:
+    """Run check_self_consistency, then replace each issue's placeholder
+    dollar_impact with a real, execution-based number (Build 1, Day 6, Task
+    2). For each issue found: construct the corrected SQL that would result
+    if source.sql were fixed to match source's own declared definition
+    (construct_corrected_query, src/query_mutation.py -- Day 6 Task 1),
+    execute both source.sql and the corrected SQL against seed_db_path, and
+    take the magnitude of the difference (single_cause_attribution,
+    src/reconciliation.py -- Day 5 Task 2; no new arithmetic or SQL-variant
+    construction is added here, both are reused as-is).
+
+    dollar_impact is stored as an UNSIGNED magnitude
+    (abs(single_cause_attribution(...))), not a signed reconciliation
+    contribution. Reasoning: this project's own prior real-execution
+    verification (Day 4 close-out, recorded in CONTEXT.md) describes both
+    Case 4 and Case 7's self-consistency effects as a plain dollar "gap"
+    (200.0 and 100.0 respectively) with no asserted sign convention, and a
+    literal signed corrected-minus-original computation produces a NEGATIVE
+    200.0 for Case 4 while producing a positive 100.0 for Case 7 -- i.e. the
+    two cases' signs would not agree under either fixed signed convention,
+    only the magnitude does. Deciding how a self-consistency issue's dollar
+    effect should be signed within a ReconciliationLineItem relative to
+    known_gap's sign convention (reported_value_a - reported_value_b) is
+    explicitly Day 7's job, not resolved here -- this function only proves
+    the magnitude is real and mechanically reproducible, matching the
+    already-verified 200.0/100.0 figures.
+
+    seed_db_path is the caller's responsibility to resolve (e.g. from
+    Scenario.seed_table + side, per scripts/build_seed_data.py's "_a"/"_b"
+    per-side file convention) -- this function only executes SQL against
+    whatever path it is given, same as single_cause_attribution itself.
+    """
+    issues = check_self_consistency(source, side)
+    resolved_issues = []
+    for issue in issues:
+        corrected_sql = construct_corrected_query(source.sql, issue)
+        impact = abs(single_cause_attribution(seed_db_path, source.sql, corrected_sql))
+        resolved_issues.append(issue.model_copy(update={"dollar_impact": impact}))
+    return resolved_issues
 
 
 def assemble_definitional_evidence(
