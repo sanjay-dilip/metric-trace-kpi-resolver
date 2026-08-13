@@ -49,11 +49,15 @@ src.sql_diff itself, so co-locating it here introduces no import cycle.
 
 from typing import Literal
 
+import sqlglot
+from sqlglot import exp
+
 from src.definition_diff import _values_equal, diff_definitions, infer_definition_from_sql
 from src.query_mutation import construct_corrected_query
 from src.reconciliation import single_cause_attribution
 from src.schema import DefinitionDifference, SelfConsistencyIssue, SQLStructuralDifference
 from src.scenario import DashboardSource
+from src.sql_diff import _bare_column
 from src.sql_parser import parse_sql
 
 _DOLLAR_IMPACT_PLACEHOLDER = 0.0
@@ -346,26 +350,111 @@ def _same_count_distinct_fact(definition_differences: list[DefinitionDifference]
     return False
 
 
+def _bare_date_column_from_snippet(snippet: str) -> str | None:
+    """Extract the single bare column name referenced in a date_field
+    SQLStructuralDifference snippet (e.g. "order_date >= '2024-01-01'"),
+    parsed via sqlglot rather than string matching, for the same reliability
+    reasons every other tool in this codebase parses instead of pattern-
+    matches raw SQL text.
+
+    Returns None -- deliberately, not a best guess -- when the snippet
+    doesn't parse (e.g. the "(no date filter)" placeholder), or when it
+    references anything other than EXACTLY one distinct bare column.
+    _diff_date_fields (src/sql_diff.py) joins multiple date columns per side
+    into one snippet with "; " when more than one exists on that side (a
+    genuinely ambiguous structural finding); sqlglot.condition() parses that
+    joined text without raising, and find_all(exp.Column) walks across both
+    halves, so a naive "take the first column found" would silently match
+    only part of an ambiguous finding. Requiring exactly one distinct column
+    is what makes the difference between the real Case 3 collision (one
+    column each side, matches) and the over-fire case Task 1b constructs
+    (two columns on one side, refuses to match) correct rather than
+    accidental."""
+    try:
+        condition = sqlglot.condition(snippet)
+    except Exception:
+        return None
+    columns = {_bare_column(column.sql()) for column in condition.find_all(exp.Column)}
+    if len(columns) != 1:
+        return None
+    return next(iter(columns))
+
+
+def _same_date_field_fact(
+    sql_difference: SQLStructuralDifference, definition_difference: DefinitionDifference
+) -> bool:
+    """"Same underlying fact" for the date_field pairing (decision 12,
+    docs/decisions.md), defined with the same precision standard as
+    _same_count_distinct_fact: not merely "both categories present," but a
+    side-matched exact equality between the two findings' own referenced
+    columns -- sql_difference's query_a_snippet/query_b_snippet (parsed via
+    _bare_date_column_from_snippet) must equal definition_difference's
+    source_a_value/source_b_value (bare-compared) on the SAME side, not
+    just overlap as an unordered set. Side-matching, not set-equality,
+    is what correctly refuses a hypothetical swapped-pairing coincidence
+    (source_a's structural column equalling source_b's declared value, or
+    vice versa) that would technically overlap as a set without actually
+    describing the same fact."""
+    structural_a = _bare_date_column_from_snippet(sql_difference.query_a_snippet)
+    structural_b = _bare_date_column_from_snippet(sql_difference.query_b_snippet)
+    if structural_a is None or structural_b is None:
+        return False
+    definitional_a = _bare_column(definition_difference.source_a_value)
+    definitional_b = _bare_column(definition_difference.source_b_value)
+    return structural_a == definitional_a and structural_b == definitional_b
+
+
 def assemble_structural_and_definitional_evidence(
     sql_differences: list[SQLStructuralDifference],
     definition_differences: list[DefinitionDifference],
 ) -> tuple[list[SQLStructuralDifference], list[DefinitionDifference]]:
-    """Implements decision 10: when a `distinct`-category SQLStructuralDifference
-    and an `aggregation`-category DefinitionDifference both exist and trace to
-    the same underlying COUNT/COUNT DISTINCT fact (per _same_count_distinct_fact),
-    the `distinct` finding is removed from sql_differences -- the DISTINCT
-    toggle is a downstream symptom of the aggregation-definition disagreement,
-    not an independent cause. definition_differences (including `aggregation`)
-    is always returned unmodified; only sql_differences is ever pruned here.
+    """Implements decision 10 AND decision 12 (docs/decisions.md) -- the same
+    class of gap (an sql_diff structural finding and a definition_diff
+    definitional finding both tracing to one underlying fact) discovered
+    twice now, resolved by the same shape of rule each time: when a
+    `distinct`-category SQLStructuralDifference and an `aggregation`-category
+    DefinitionDifference trace to the same COUNT/COUNT DISTINCT fact (decision
+    10, per _same_count_distinct_fact), OR a `date_field`-category
+    SQLStructuralDifference and a `date_field`-category DefinitionDifference
+    trace to the same date-column swap (decision 12, per
+    _same_date_field_fact), the SQLStructuralDifference is removed from
+    sql_differences -- the mechanical/structural finding is a downstream
+    restatement of the business-meaning definitional finding, not an
+    independent cause. definition_differences is always returned unmodified;
+    only sql_differences is ever pruned here.
 
-    When the condition does not hold -- either finding absent, or a `distinct`
-    finding present without a same-fact `aggregation` counterpart -- both
-    lists pass through unchanged. No new inference or comparison logic: this
-    is orchestration/filtering only, over already-computed sql_diff and
+    Decision 12's own dollar-value note (see docs/decisions.md for the full
+    reasoning, and the Case 7 comparison this was checked against): unlike
+    Day 7 Part A's suppressed-cross-source folding (a genuinely SEPARATE,
+    SEQUENTIAL correction whose dollar value would otherwise vanish),
+    date_field's two colliding findings describe the SAME single SQL
+    mutation (swap the date column) when they match -- there is no second,
+    additional dollar-bearing correction to fold in. The surviving
+    DefinitionDifference's own downstream dollar computation (construct_corrected_query
+    + single_cause_attribution/shapley_pair_attribution, in
+    src/reconciliation_assembly.py) already fully captures the entire
+    effect once the redundant structural finding is out of the way -- this
+    function suppresses that redundant finding, no arithmetic beyond that
+    suppression is required or performed here.
+
+    When neither condition holds -- either finding of a pair absent, or a
+    structural finding present without a same-fact definitional counterpart
+    -- both lists pass through unchanged for that pairing. No new inference
+    or comparison logic beyond the two "same fact" helpers: this is
+    orchestration/filtering only, over already-computed sql_diff and
     definition_diff output, same as assemble_definitional_evidence.
     """
     has_distinct_finding = any(diff.category == "distinct" for diff in sql_differences)
     if has_distinct_finding and _same_count_distinct_fact(definition_differences):
         sql_differences = [diff for diff in sql_differences if diff.category != "distinct"]
+
+    date_field_structural = next((diff for diff in sql_differences if diff.category == "date_field"), None)
+    date_field_definitional = next((diff for diff in definition_differences if diff.field == "date_field"), None)
+    if (
+        date_field_structural is not None
+        and date_field_definitional is not None
+        and _same_date_field_fact(date_field_structural, date_field_definitional)
+    ):
+        sql_differences = [diff for diff in sql_differences if diff.category != "date_field"]
 
     return sql_differences, definition_differences
