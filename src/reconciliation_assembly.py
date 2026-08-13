@@ -47,16 +47,24 @@ interact in the first place.
 Deterministic only -- no LLM calls anywhere.
 """
 
+from config import DATA_SAMPLE_DIR
 from src.definition_diff import diff_definitions
 from src.query_mutation import construct_corrected_query
 from src.reconciliation import shapley_pair_attribution, single_cause_attribution
-from src.scenario import DashboardSource
+from src.scenario import DashboardSource, Scenario
 from src.schema import (
     DefinitionDifference,
+    InvestigationEvidence,
     ReconciliationLineItem,
     SelfConsistencyIssue,
     SQLStructuralDifference,
 )
+from src.self_consistency import (
+    assemble_definitional_evidence_with_dollar_impacts,
+    assemble_structural_and_definitional_evidence,
+)
+from src.sql_diff import diff_sql
+from src.sql_parser import parse_sql
 
 _Difference = DefinitionDifference | SQLStructuralDifference
 
@@ -201,3 +209,92 @@ def assemble_reconciliation_line_items(
         line_items.append(_self_consistency_line_item(source_a, source_b, issue))
 
     return line_items
+
+
+def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence:
+    """Build 1, Day 7, Task 2 -- the completion gate for the deterministic
+    core. Runs the FULL pipeline for one scenario end to end: sql_diff,
+    diff_definitions/check_self_consistency (via
+    assemble_definitional_evidence_with_dollar_impacts, Day 7 Part A),
+    decision 10 + decision 12's suppression (assemble_structural_and_definitional_evidence),
+    the Shapley-pair engine where a genuine interacting pair remains, and
+    assemble_reconciliation_line_items -- then computes unexplained_residual
+    and returns the complete InvestigationEvidence (src/schema.py), the
+    first point in this project where that full schema is populated with
+    real, computed data rather than a hand-constructed instance.
+
+    Interacting-pair selection, spelled out precisely rather than left
+    implicit: after suppression, whatever DefinitionDifferences and
+    SQLStructuralDifferences remain are pooled into one list.
+      - 0 remaining: no cross-source line items (pure self-consistency-only
+        scenarios like Case 4/7, or pure-residual scenarios like Case 5,
+        or the negative control, Case 6).
+      - 1 remaining: attributed as a single, non-interacting cause
+        (Case 1's lone join_type difference).
+      - exactly 2 remaining: treated as one interacting pair and Shapley-
+        averaged. This is not a new detection heuristic invented here --
+        it is decision 11's own stated rule, applied literally: "For any
+        pair of remaining causes ... this applies uniformly to every
+        remaining pair, without first attempting to detect whether the
+        pair actually overlaps." Every one of the 7 fixtures that reaches
+        this branch (Case 2, Case 3) is a definitional-vs-definitional
+        pair, the only shape decision 11 confirmed empirically; a
+        definitional-vs-structural pair would take this same branch today
+        but decision 11's own scope caveat already flags that shape as
+        untested, not this function's problem to resolve.
+      - 3+ remaining: raises. Averaging across more than two orderings is
+        explicitly untested and deferred to Build 3 (decision 11) -- none
+        of the 7 current fixtures reach this branch (verified explicitly,
+        not assumed), and guessing which sub-pairs interact would be
+        exactly the kind of silent gap-patching this project has
+        repeatedly caught itself doing and stopped doing.
+
+    seed_db_path_a/seed_db_path_b are resolved from scenario.seed_table
+    here (the "_a"/"_b" per-side convention scripts/build_seed_data.py
+    established) -- every other function in this module takes seed paths
+    as caller-supplied arguments; this is the one place in the pipeline
+    that owns resolving them, since it is the one function that owns a
+    whole Scenario rather than two bare DashboardSources.
+    """
+    seed_db_path_a = str(DATA_SAMPLE_DIR / f"{scenario.seed_table}_a.duckdb")
+    seed_db_path_b = str(DATA_SAMPLE_DIR / f"{scenario.seed_table}_b.duckdb")
+
+    sql_differences = diff_sql(parse_sql(scenario.source_a.sql), parse_sql(scenario.source_b.sql))
+    definition_differences, self_consistency_issues = assemble_definitional_evidence_with_dollar_impacts(
+        scenario.source_a, scenario.source_b, seed_db_path_a, seed_db_path_b
+    )
+    sql_differences, definition_differences = assemble_structural_and_definitional_evidence(
+        sql_differences, definition_differences
+    )
+
+    remaining_causes: list[_Difference] = [*definition_differences, *sql_differences]
+    if len(remaining_causes) > 2:
+        raise ValueError(
+            f"assemble_investigation_evidence found {len(remaining_causes)} remaining "
+            "cross-source causes for scenario "
+            f"'{scenario.scenario_id}' after suppression; interaction beyond a single "
+            "pair is untested (decision 11, docs/decisions.md) and this function "
+            "refuses to guess which sub-pairs interact rather than silently pick one."
+        )
+    interacting_pairs = [(remaining_causes[0], remaining_causes[1])] if len(remaining_causes) == 2 else None
+
+    line_items = assemble_reconciliation_line_items(
+        scenario.source_a,
+        scenario.source_b,
+        seed_db_path_a,
+        sql_differences,
+        definition_differences,
+        self_consistency_issues,
+        interacting_pairs,
+    )
+
+    total_dollar_impact = sum(item.dollar_impact for item in line_items)
+    unexplained_residual = scenario.known_gap - total_dollar_impact
+
+    return InvestigationEvidence(
+        definition_differences=definition_differences,
+        self_consistency_issues=self_consistency_issues,
+        sql_differences=sql_differences,
+        reconciliation=line_items,
+        unexplained_residual=unexplained_residual,
+    )
