@@ -23,7 +23,35 @@ class SelfConsistencyIssue(BaseModel):
     declared metric definition. Takes precedence over any DefinitionDifference
     on the same field: if a source's SQL doesn't even match its own declared
     definition, the cross-source comparison for that field is not meaningful
-    until this is resolved."""
+    until this is resolved.
+
+    dollar_impact sign convention (Build 1, Day 6 close-out), matching
+    Scenario.known_gap's existing convention (known_gap = reported_value_a
+    minus reported_value_b, positive means A reports higher than B): a
+    positive dollar_impact means this cause is currently INFLATING
+    known_gap -- fixing it moves the observed A-vs-B gap toward zero (or
+    negative). A negative dollar_impact means this cause is currently
+    SUPPRESSING/offsetting known_gap -- fixing it moves the gap further
+    from zero in the positive direction. This is the sign, not just the
+    magnitude, that Day 7's reconciliation sums every cause's dollar_impact
+    against known_gap to check.
+
+    Concretely: let `original` be the source's as-written SQL executed
+    against its own seed data, and `corrected` be the same source's SQL if
+    it were fixed to match its own declared definition (construct_corrected_query,
+    src/query_mutation.py; execution via single_cause_attribution,
+    src/reconciliation.py). For a source="a" issue: dollar_impact = original
+    - corrected (reducing A's own inflated value reduces known_gap by
+    exactly that amount, since known_gap subtracts B, which A-side issues
+    don't touch). For a source="b" issue the sign flips: dollar_impact =
+    corrected - original (known_gap subtracts B, so an increase in B's
+    value reduces known_gap -- the opposite direction of the same
+    correction applied to A).
+
+    The same convention applies to ReconciliationLineItem.dollar_impact
+    once Day 7 populates it from cross-source causes too, so every cause's
+    dollar_impact can be summed directly against known_gap without a
+    separate sign-flip step per cause type."""
 
     source: Literal["a", "b"]
     declared_field: str
