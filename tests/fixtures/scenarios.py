@@ -38,9 +38,13 @@ CASE_1_JOIN_TYPE = Scenario(
             aggregation="sum",
         ),
     ),
-    reported_value_a=152300.0,
-    reported_value_b=148900.0,
-    known_gap=152300.0 - 148900.0,
+    # reported_value_a/b are calibrated to real execution against this scenario's
+    # own seed data (case_01_join_type_a/b.duckdb), per Decision 13's resolution
+    # (docs/decisions.md, Build 1 Day 7 Task 3) -- not hand-typed at dashboard
+    # scale, matching Case 7's original standard, now the convention for all 7.
+    reported_value_a=600.0,
+    reported_value_b=300.0,
+    known_gap=600.0 - 300.0,
     seed_table="case_01_join_type",
 )
 
@@ -73,9 +77,10 @@ CASE_2_MULTI_CAUSE = Scenario(
             aggregation="count",
         ),
     ),
-    reported_value_a=8400.0,
-    reported_value_b=7150.0,
-    known_gap=8400.0 - 7150.0,
+    # Calibrated to real execution (Decision 13's resolution) -- see Case 1's comment.
+    reported_value_a=5.0,
+    reported_value_b=4.0,
+    known_gap=5.0 - 4.0,
     seed_table="case_02_multi_cause",
 )
 
@@ -101,9 +106,10 @@ CASE_3_HYBRID_FALLBACK = Scenario(
         ),
         declared_definition=None,
     ),
-    reported_value_a=203000.0,
-    reported_value_b=197500.0,
-    known_gap=203000.0 - 197500.0,
+    # Calibrated to real execution (Decision 13's resolution) -- see Case 1's comment.
+    reported_value_a=550.0,
+    reported_value_b=450.0,
+    known_gap=550.0 - 450.0,
     seed_table="case_03_hybrid_fallback",
 )
 
@@ -134,9 +140,10 @@ CASE_4_GOVERNANCE_DRIFT = Scenario(
             aggregation="sum",
         ),
     ),
-    reported_value_a=210000.0,
-    reported_value_b=198500.0,
-    known_gap=210000.0 - 198500.0,
+    # Calibrated to real execution (Decision 13's resolution) -- see Case 1's comment.
+    reported_value_a=300.0,
+    reported_value_b=100.0,
+    known_gap=300.0 - 100.0,
     seed_table="case_04_governance_drift",
 )
 
