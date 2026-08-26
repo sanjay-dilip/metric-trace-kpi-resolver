@@ -74,6 +74,14 @@ Both sides' customers dimension table is identical (customer_id 1 and 2
 only) -- the discrepancy lives entirely in orders, matching a real-world
 scenario where a fact table gains a phantom row referencing a customer
 that was deleted or never created upstream, not a dimension-side problem.
+
+Case 11 (Build 2, Day 4 close-out) is Case 10's mirror image: the orphan
+row sits on source_b's orders table instead of source_a's, closing a real
+gap a review found -- Case 10 alone never exercised
+check_referential_integrity's source="b" sign-flip branch with real
+execution, only Case 10's source="a" branch. Same schema, same customers
+dimension shape, deliberately duplicated rather than imported (matching
+every case's self-contained data convention in this file).
 """
 
 from pathlib import Path
@@ -231,6 +239,30 @@ CASE_10_ORDERS_B = [
     (4, 1, 50.0, "cancelled", "2023-12-01"),
 ]
 
+# --- Case 11: referential integrity, mirrored onto source_b (Build 2, Day 4
+# close-out). Case 10 only ever puts the orphan reference on source_a, so
+# check_referential_integrity's source="b" sign-flip branch had zero
+# execution-derived proof -- the exact same shape of gap Day 6's
+# self-consistency close-out found and closed with a dedicated source="b"
+# test, not assumed safe by code inspection alone. Case 11 is the mirror
+# image of Case 10: source_b's orders table has the orphan row
+# (customer_id=99), source_a's omits it. Same customers dimension as
+# Case 10 (customer_id 1 and 2 only), duplicated here rather than
+# imported, matching every other case's self-contained-fixture-data
+# convention in this file. ---
+CASE_11_CUSTOMERS = [(1, "active", "2024-01-01"), (2, "active", "2024-01-01")]
+CASE_11_ORDERS_A = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 2, 200.0, "active", "2024-03-01"),
+    (4, 1, 50.0, "cancelled", "2023-12-01"),
+]
+CASE_11_ORDERS_B = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 2, 200.0, "active", "2024-03-01"),
+    (3, 99, 300.0, "active", "2024-01-15"),  # orphan: customer_id 99 does not exist
+    (4, 1, 50.0, "cancelled", "2023-12-01"), # excluded by status regardless
+]
+
 # --- Case 7: precedence-rule conflict. order_id 2 (cancelled) is wrongly
 # INCLUDED by A's as-written SQL (which only excludes 'refunded', not
 # 'cancelled' as A declares) -- A's SQL under-excludes relative to its own
@@ -306,6 +338,17 @@ def build_all() -> None:
         "case_10_referential_integrity", "b",
         (_build_customers_table, CASE_10_CUSTOMERS),
         (_build_orders_table, CASE_10_ORDERS_B),
+    )
+
+    _seed_file(
+        "case_11_referential_integrity_source_b", "a",
+        (_build_customers_table, CASE_11_CUSTOMERS),
+        (_build_orders_table, CASE_11_ORDERS_A),
+    )
+    _seed_file(
+        "case_11_referential_integrity_source_b", "b",
+        (_build_customers_table, CASE_11_CUSTOMERS),
+        (_build_orders_table, CASE_11_ORDERS_B),
     )
 
 
