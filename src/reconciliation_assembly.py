@@ -255,6 +255,12 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
     as caller-supplied arguments; this is the one place in the pipeline
     that owns resolving them, since it is the one function that owns a
     whole Scenario rather than two bare DashboardSources.
+
+    data_quality_issues (src/schema.py, Build 2, Day 1) is always
+    returned empty here -- no freshness/data-quality pre-check exists yet
+    to populate it (Build 2, Day 2+). Passed explicitly as [] rather than
+    given a schema-level default, matching every other finding-list
+    field's convention on InvestigationEvidence.
     """
     seed_db_path_a = str(DATA_SAMPLE_DIR / f"{scenario.seed_table}_a.duckdb")
     seed_db_path_b = str(DATA_SAMPLE_DIR / f"{scenario.seed_table}_b.duckdb")
@@ -295,6 +301,7 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
         definition_differences=definition_differences,
         self_consistency_issues=self_consistency_issues,
         sql_differences=sql_differences,
+        data_quality_issues=[],
         reconciliation=line_items,
         unexplained_residual=unexplained_residual,
     )

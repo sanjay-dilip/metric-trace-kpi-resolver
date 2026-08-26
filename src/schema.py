@@ -93,6 +93,34 @@ class SQLStructuralDifference(BaseModel):
     query_b_snippet: str
 
 
+class DataQualityIssue(BaseModel):
+    """A data-freshness or completeness defect on one source (stale extract,
+    missing partition, late-arriving data, or a referential-integrity gap)
+    that accounts for some or all of the observed KPI discrepancy,
+    independent of any metric-definition or SQL-structural difference.
+    Build 2, Day 1: schema only -- no detection tool populates this yet.
+
+    dollar_impact will follow the same sign convention as
+    SelfConsistencyIssue.dollar_impact once Build 2's freshness_attribution
+    function exists to compute it (Day 2+, not built yet): for a
+    source="a" issue, a positive value means the stale/incomplete data is
+    currently INFLATING known_gap (running the same query against the
+    complete snapshot would move the gap toward zero); the sign flips for
+    a source="b" issue, mirroring SelfConsistencyIssue's own convention
+    exactly (src/schema.py, above) so every cause type sums against
+    known_gap the same way. Cross-category interaction with
+    DefinitionDifference/SQLStructuralDifference on the same fixture's
+    overlapping rows is untested and explicitly out of scope for Build 2
+    -- deferred to Build 3, mirroring decision 11's own stated scope
+    limit (docs/decisions.md)."""
+
+    category: Literal["stale_extract", "missing_partition", "late_arriving_data", "referential_integrity"]
+    source: Literal["a", "b"]
+    description: str
+    confidence: Literal["high", "medium", "low"]
+    dollar_impact: float
+
+
 class ReconciliationLineItem(BaseModel):
     """One confirmed cause's contribution to the total dollar gap, with the
     computation that produced it named for traceability back to a specific
@@ -108,10 +136,15 @@ class InvestigationEvidence(BaseModel):
     to the LLM explainer as its only source of truth. Precedence rule: when a
     SelfConsistencyIssue exists for a field, the corresponding cross-source
     DefinitionDifference for that same field is suppressed from
-    definition_differences, not double-counted alongside it in reconciliation."""
+    definition_differences, not double-counted alongside it in reconciliation.
+    data_quality_issues (Build 2, Day 1) is not yet populated by any
+    assembly function -- reconciliation_assembly.py's assemble_investigation_evidence
+    still only fills the other four fields; wiring a freshness pre-check
+    into that function is Build 2, Day 2+ work, not this one."""
 
     definition_differences: list[DefinitionDifference]
     self_consistency_issues: list[SelfConsistencyIssue]
     sql_differences: list[SQLStructuralDifference]
+    data_quality_issues: list[DataQualityIssue]
     reconciliation: list[ReconciliationLineItem]
     unexplained_residual: float
