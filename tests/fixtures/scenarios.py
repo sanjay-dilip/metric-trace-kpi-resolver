@@ -307,6 +307,53 @@ CASE_8_STALE_EXTRACT = Scenario(
     freshness_complete_seed_table="case_08_stale_extract_complete",
 )
 
+# Case 9: missing partition (Build 2, Day 3). Shares Case 8's exact clean-
+# fixture shape (identical SQL both sides, no declared definitions, no
+# other cause type present) -- only the seed data differs, deliberately,
+# to isolate missing_partition from stale_extract by construction rather
+# than by any code difference (src/data_quality.py's check_missing_partition
+# and check_stale_extract are the same detection mechanism; see that
+# module's docstring). Case 8's stale side is missing one scattered row
+# (order_id 3) with no structural relationship to what remains. Case 9's
+# stale side is missing an entire contiguous, identifiable date-slice --
+# every row for order_date='2024-01-10' (order_id 1 and 2, both rows) --
+# while a different date (2024-02-01) is untouched, which is what makes
+# this genuinely a "missing partition" rather than a relabeled Case 8.
+# reported_value_a (200.0) and reported_value_b (450.0) are real execution
+# figures (scripts/build_seed_data.py, verified directly against the
+# actual seed files), per decision 13's calibration convention.
+CASE_9_MISSING_PARTITION = Scenario(
+    scenario_id="case_09_missing_partition",
+    description=(
+        "Missing partition: source_a's snapshot is missing an entire "
+        "contiguous date-slice (every row for one order_date) that "
+        "source_b's (complete) snapshot has -- no definitional or "
+        "structural cause present, isolating the freshness mechanism "
+        "the same way Case 8 isolates its own scattered-row variant."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE status NOT IN ('cancelled') AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE status NOT IN ('cancelled') AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    ),
+    reported_value_a=200.0,
+    reported_value_b=450.0,
+    known_gap=200.0 - 450.0,
+    seed_table="case_09_missing_partition",
+    freshness_complete_seed_table="case_09_missing_partition_complete",
+)
+
 SCENARIOS = [
     CASE_1_JOIN_TYPE,
     CASE_2_MULTI_CAUSE,
@@ -316,14 +363,19 @@ SCENARIOS = [
     CASE_6_NEGATIVE_CONTROL,
     CASE_7_PRECEDENCE_CONFLICT,
 ]
-"""CASE_8_STALE_EXTRACT is deliberately NOT included here (Build 2, Day 2).
-Every test/tool that iterates SCENARIOS runs the full deterministic
-pipeline via assemble_investigation_evidence (src/reconciliation_assembly.py),
-which does not call check_stale_extract and always returns
-data_quality_issues=[] -- adding Case 8 to this list today would make it
-silently look identical to Case 5 (100% unexplained residual, "no cause
-found") to every one of those tests, which is not true and would be a
-misleading regression surface, not a real one. Wiring check_stale_extract
-into assemble_investigation_evidence is explicitly out of scope for this
-session; Case 8 is exercised directly (tests/test_data_quality.py) until
-that wiring exists."""
+"""CASE_8_STALE_EXTRACT and CASE_9_MISSING_PARTITION are both deliberately
+NOT included here (Build 2, Days 2-3). Every test/tool that iterates
+SCENARIOS runs the full deterministic pipeline via
+assemble_investigation_evidence (src/reconciliation_assembly.py), which
+does not call check_stale_extract or check_missing_partition and always
+returns data_quality_issues=[] -- adding either case to this list today
+would make it silently look identical to Case 5 (100% unexplained
+residual, "no cause found") to every one of those tests, which is not true
+and would be a misleading regression surface, not a real one. Wiring
+data_quality_issues into assemble_investigation_evidence is explicitly out
+of scope for this session; both cases are exercised directly
+(tests/test_data_quality.py) until that wiring exists. Both cases share
+ONE trigger condition for re-inclusion: the moment assemble_investigation_evidence
+calls either detection function, add BOTH Case 8 and Case 9 to SCENARIOS
+together, re-run the full suite, and re-verify both through the explainer
+-- not just whichever one prompted the wiring change."""
