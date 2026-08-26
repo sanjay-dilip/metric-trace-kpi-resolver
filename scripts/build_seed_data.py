@@ -27,6 +27,22 @@ the case exists to demonstrate.
 
 Idempotent: re-running this script deletes and rebuilds every file listed
 in SEED_SPECS from scratch.
+
+Case 8 (Build 2, Day 2) extends this convention for freshness fixtures,
+per Scenario.freshness_complete_seed_table's own docstring (src/scenario.py,
+Build 2 Day 1, decision 15): its seed_table ("case_08_stale_extract")
+resolves to the existing "_a"/"_b" pair exactly as above (case_08's "_a"
+file is the stale/as-delivered snapshot, "_b" is already complete -- only
+A has a freshness cause in this fixture). freshness_complete_seed_table
+("case_08_stale_extract_complete") is a SECOND, independent base name,
+resolved via the identical "_a"/"_b" suffixing: {base}_a.duckdb is the
+complete counterfactual for source A (what check_stale_extract's
+complete_db_path points at), {base}_b.duckdb is built too, for
+consistency with every other base name in this file always producing a
+matched "_a"/"_b" pair -- even though Case 8's own test only exercises
+the "_a" side, since B was never stale. Both complete-pair files hold
+CASE_8_ORDERS_COMPLETE; the "_a" stale file alone differs, holding
+CASE_8_ORDERS_STALE_A.
 """
 
 from pathlib import Path
@@ -127,6 +143,27 @@ CASE_6_ORDERS = [
     (4, 1, 10000.0, "active", "2023-12-01"),    # excluded by date
 ]
 
+# --- Case 8: stale extract (Build 2, Day 2). source_a is the stale side --
+# its as-delivered extract is missing order_id 3 (e.g. it ran before that
+# order was recorded). source_b already reflects the complete data (never
+# stale), so CASE_8_ORDERS_B == CASE_8_ORDERS_COMPLETE exactly: B's own
+# "as-delivered" data and "the complete truth" are the same fact for a
+# fixture where only A has a freshness cause. Both source_a.sql/
+# source_b.sql are identical text (matching Case 5/6's clean-fixture
+# pattern) -- the entire gap comes from A's underlying data being
+# incomplete, not from any query or definition difference. ---
+CASE_8_ORDERS_COMPLETE = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 1, 200.0, "active", "2024-03-01"),
+    (3, 1, 150.0, "active", "2024-01-15"),   # missing from A's stale extract
+    (4, 1, 50.0, "cancelled", "2023-12-01"), # excluded by status regardless
+]
+CASE_8_ORDERS_STALE_A = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 1, 200.0, "active", "2024-03-01"),
+    (4, 1, 50.0, "cancelled", "2023-12-01"),
+]
+
 # --- Case 7: precedence-rule conflict. order_id 2 (cancelled) is wrongly
 # INCLUDED by A's as-written SQL (which only excludes 'refunded', not
 # 'cancelled' as A declares) -- A's SQL under-excludes relative to its own
@@ -182,6 +219,11 @@ def build_all() -> None:
 
     _seed_file("case_05_unexplained_residual", "a", (_build_orders_table, CASE_5_ORDERS_A))
     _seed_file("case_05_unexplained_residual", "b", (_build_orders_table, CASE_5_ORDERS_B))
+
+    _seed_file("case_08_stale_extract", "a", (_build_orders_table, CASE_8_ORDERS_STALE_A))
+    _seed_file("case_08_stale_extract", "b", (_build_orders_table, CASE_8_ORDERS_COMPLETE))
+    _seed_file("case_08_stale_extract_complete", "a", (_build_orders_table, CASE_8_ORDERS_COMPLETE))
+    _seed_file("case_08_stale_extract_complete", "b", (_build_orders_table, CASE_8_ORDERS_COMPLETE))
 
 
 if __name__ == "__main__":
