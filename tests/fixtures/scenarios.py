@@ -402,6 +402,56 @@ CASE_10_REFERENTIAL_INTEGRITY = Scenario(
     seed_table="case_10_referential_integrity",
 )
 
+# Case 11: referential integrity, mirrored onto source_b (Build 2, Day 4
+# close-out). Case 10 alone never exercised check_referential_integrity's
+# source="b" sign-flip branch with real execution -- only its source="a"
+# branch had a real, executed proof point. This is a real gap a review
+# found: Day 2/3's dollar_impact sign convention (negate for source="a",
+# use as-is for source="b") is documented and was applied in
+# check_referential_integrity's code by direct structural analogy, but
+# that analogy had never been proven by running the code with the cause
+# on source_b, the same shape of gap Day 6's self-consistency close-out
+# found and closed with a dedicated source="b" test rather than trusting
+# code inspection alone. Case 11 is Case 10's exact mirror image: the
+# orphan row (customer_id=99) sits on source_b's orders table instead of
+# source_a's. reported_value_a (300.0), reported_value_b (600.0), and
+# known_gap (-300.0) are real execution figures (scripts/build_seed_data.py),
+# per decision 13's calibration convention -- check_referential_integrity's
+# dollar_impact for source="b" came out to exactly -300.0, matching
+# known_gap exactly, confirming the sign-flip is correct by execution, not
+# assumption.
+CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B = Scenario(
+    scenario_id="case_11_referential_integrity_source_b",
+    description=(
+        "Referential integrity, mirrored onto source_b: source_b's orders "
+        "(fact) table has an orphan row referencing a customer_id absent "
+        "from the customers (dimension) table -- Case 10's exact mirror "
+        "image, proving check_referential_integrity's source=\"b\" "
+        "sign-flip with real execution rather than by code inspection "
+        "alone."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE status NOT IN ('cancelled') AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE status NOT IN ('cancelled') AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    ),
+    reported_value_a=300.0,
+    reported_value_b=600.0,
+    known_gap=300.0 - 600.0,
+    seed_table="case_11_referential_integrity_source_b",
+)
+
 SCENARIOS = [
     CASE_1_JOIN_TYPE,
     CASE_2_MULTI_CAUSE,
@@ -411,21 +461,21 @@ SCENARIOS = [
     CASE_6_NEGATIVE_CONTROL,
     CASE_7_PRECEDENCE_CONFLICT,
 ]
-"""CASE_8_STALE_EXTRACT, CASE_9_MISSING_PARTITION, and
-CASE_10_REFERENTIAL_INTEGRITY are all deliberately NOT included here
-(Build 2, Days 2-4). Every test/tool that iterates SCENARIOS runs the full
-deterministic pipeline via assemble_investigation_evidence
-(src/reconciliation_assembly.py), which does not call check_stale_extract,
-check_missing_partition, or check_referential_integrity and always returns
-data_quality_issues=[] -- adding any of these cases to this list today
-would make it silently look identical to Case 5 (100% unexplained
-residual, "no cause found") to every one of those tests, which is not true
-and would be a misleading regression surface, not a real one. Wiring
-data_quality_issues into assemble_investigation_evidence is explicitly out
-of scope for this session; all three cases are exercised directly
-(tests/test_data_quality.py) until that wiring exists. All three share ONE
-trigger condition for re-inclusion: the moment assemble_investigation_evidence
-calls any of the three detection functions, add Case 8, Case 9, AND Case
-10 to SCENARIOS together, re-run the full suite, and re-verify all three
-through the explainer -- not just whichever one prompted the wiring
-change."""
+"""CASE_8_STALE_EXTRACT, CASE_9_MISSING_PARTITION,
+CASE_10_REFERENTIAL_INTEGRITY, and CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B
+are all deliberately NOT included here (Build 2, Days 2-4). Every
+test/tool that iterates SCENARIOS runs the full deterministic pipeline via
+assemble_investigation_evidence (src/reconciliation_assembly.py), which
+does not call check_stale_extract, check_missing_partition, or
+check_referential_integrity and always returns data_quality_issues=[] --
+adding any of these cases to this list today would make it silently look
+identical to Case 5 (100% unexplained residual, "no cause found") to
+every one of those tests, which is not true and would be a misleading
+regression surface, not a real one. Wiring data_quality_issues into
+assemble_investigation_evidence is explicitly out of scope for this
+session; all four cases are exercised directly (tests/test_data_quality.py)
+until that wiring exists. All four share ONE trigger condition for
+re-inclusion: the moment assemble_investigation_evidence calls any of the
+three detection functions, add Case 8, Case 9, Case 10, AND Case 11 to
+SCENARIOS together, re-run the full suite, and re-verify all four through
+the explainer -- not just whichever one prompted the wiring change."""

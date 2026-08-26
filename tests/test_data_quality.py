@@ -12,7 +12,16 @@ lives entirely in fixture construction, not in either function's logic
 (src/data_quality.py's module docstring). And proves the inverse (Day 4):
 check_referential_integrity does NOT fire on Case 8 or Case 9's data,
 confirming it is a genuinely distinct mechanism, not a third row-count
-check in disguise."""
+check in disguise. Case 11 (Day 4 close-out) closes a real gap a review
+found: Case 10 alone only ever exercised check_referential_integrity's
+source="a" dollar_impact sign branch with real execution -- the source="b"
+sign-flip was applied in code by direct structural analogy to
+check_stale_extract's own already-proven convention, but had never itself
+been proven by running the code with the cause on source_b. Case 11 is
+Case 10's exact mirror image, proving the sign-flip by execution rather
+than by code inspection alone -- the same shape of gap Day 6's
+self-consistency close-out found and closed with its own dedicated
+source="b" test."""
 
 import duckdb
 
@@ -22,6 +31,7 @@ from tests.fixtures.scenarios import (
     CASE_8_STALE_EXTRACT,
     CASE_9_MISSING_PARTITION,
     CASE_10_REFERENTIAL_INTEGRITY,
+    CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
 )
 
 
@@ -209,3 +219,25 @@ def test_check_referential_integrity_does_not_fire_on_case_8_or_case_9_cross_cat
             s.source_a.sql, "a",
         )
         assert result is None, f"{s.scenario_id} unexpectedly flagged a referential-integrity issue"
+
+
+def test_case_11_referential_integrity_source_b_dollar_impact_sign_flip_matches_known_gap():
+    """Day 4 close-out: Case 10 alone never exercised check_referential_integrity's
+    source="b" branch with real execution -- only source="a" had an
+    executed proof point. Case 11 is Case 10's exact mirror image (orphan
+    row on source_b instead of source_a) and proves, by real execution
+    rather than by code inspection alone, that the dollar_impact sign
+    correctly flips for a source="b" issue: dollar_impact must equal
+    known_gap exactly (-300.0), the same standard every other single-cause
+    fixture in this project is held to."""
+    s = CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B
+    db = str(DATA_SAMPLE_DIR / f"{s.seed_table}_b.duckdb")
+
+    issue = check_referential_integrity(db, db, "orders", "customers", "customer_id", "customer_id", s.source_b.sql, "b")
+
+    assert issue is not None
+    assert issue.category == "referential_integrity"
+    assert issue.source == "b"
+    assert issue.confidence == "high"
+    assert "1 row(s)" in issue.description
+    assert issue.dollar_impact == s.known_gap == -300.0
