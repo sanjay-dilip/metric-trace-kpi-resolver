@@ -261,6 +261,52 @@ CASE_7_PRECEDENCE_CONFLICT = Scenario(
     seed_table="case_07_precedence_conflict",
 )
 
+# Case 8: stale extract (Build 2, Day 2). source_a.sql and source_b.sql are
+# identical text (matching Case 5/6's clean-fixture pattern) and both sides
+# declare no metric definition -- sql_diff, definition_diff, and
+# self_consistency all find nothing (verified: no other cause type is
+# present). The entire gap traces to source_a's seed_table
+# ("case_08_stale_extract", the stale/as-delivered snapshot per decision
+# 15) being missing order_id 3 relative to freshness_complete_seed_table
+# ("case_08_stale_extract_complete", the complete counterfactual) --
+# source_a is the stale side, chosen arbitrarily (matching Case 4/7's own
+# precedent of putting the data-quality cause on side A). reported_value_a
+# (300.0) and reported_value_b (450.0) are both real execution figures
+# (scripts/build_seed_data.py, verified directly against the actual seed
+# files, not hand-typed) -- per decision 13's calibration convention,
+# restated explicitly for this new fixture shape by Scenario's own
+# docstring (src/scenario.py).
+CASE_8_STALE_EXTRACT = Scenario(
+    scenario_id="case_08_stale_extract",
+    description=(
+        "Stale extract: source_a's snapshot is missing a row that "
+        "source_b's (complete) snapshot has -- no definitional or "
+        "structural cause present, isolating the freshness mechanism "
+        "the same way Case 5/6 isolate their own single mechanism."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE status NOT IN ('cancelled') AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE status NOT IN ('cancelled') AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    ),
+    reported_value_a=300.0,
+    reported_value_b=450.0,
+    known_gap=300.0 - 450.0,
+    seed_table="case_08_stale_extract",
+    freshness_complete_seed_table="case_08_stale_extract_complete",
+)
+
 SCENARIOS = [
     CASE_1_JOIN_TYPE,
     CASE_2_MULTI_CAUSE,
@@ -270,3 +316,14 @@ SCENARIOS = [
     CASE_6_NEGATIVE_CONTROL,
     CASE_7_PRECEDENCE_CONFLICT,
 ]
+"""CASE_8_STALE_EXTRACT is deliberately NOT included here (Build 2, Day 2).
+Every test/tool that iterates SCENARIOS runs the full deterministic
+pipeline via assemble_investigation_evidence (src/reconciliation_assembly.py),
+which does not call check_stale_extract and always returns
+data_quality_issues=[] -- adding Case 8 to this list today would make it
+silently look identical to Case 5 (100% unexplained residual, "no cause
+found") to every one of those tests, which is not true and would be a
+misleading regression surface, not a real one. Wiring check_stale_extract
+into assemble_investigation_evidence is explicitly out of scope for this
+session; Case 8 is exercised directly (tests/test_data_quality.py) until
+that wiring exists."""

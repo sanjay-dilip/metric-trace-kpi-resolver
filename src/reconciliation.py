@@ -115,6 +115,29 @@ def shapley_pair_attribution(
     return x_attribution, y_attribution
 
 
+def freshness_attribution(seed_db_path_stale: str, seed_db_path_complete: str, query_sql: str) -> float:
+    """Build 2, Day 2. Attribute the dollar effect of a data-freshness cause
+    (stale extract, missing partition, late-arriving data): the SAME query
+    is executed against two different DuckDB files -- the stale/as-delivered
+    snapshot and the complete counterfactual -- rather than
+    single_cause_attribution/shapley_pair_attribution's own shape (one
+    database, two SQL variants). Freshness's counterfactual is a difference
+    in the underlying DATA, not the query, which is exactly why this
+    function's signature is shaped the opposite way from its siblings.
+
+    Returns (complete - stale), mirroring single_cause_attribution's own
+    (corrected - baseline) return convention exactly, with "complete"
+    playing "corrected"'s role and "stale" playing "baseline"'s -- so a
+    caller (src/data_quality.py) applies the identical sign convention
+    already established for SelfConsistencyIssue.dollar_impact (negate for
+    a source="a" issue, use as-is for source="b") without inventing a new
+    rule for this cause type.
+    """
+    stale = _execute_scalar(seed_db_path_stale, query_sql)
+    complete = _execute_scalar(seed_db_path_complete, query_sql)
+    return complete - stale
+
+
 def single_cause_attribution(seed_db_path: str, baseline_sql: str, corrected_sql: str) -> float:
     """Attribute the full delta to a single cause -- no pairwise averaging.
 
