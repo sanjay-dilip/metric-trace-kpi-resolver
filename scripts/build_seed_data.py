@@ -43,6 +43,20 @@ matched "_a"/"_b" pair -- even though Case 8's own test only exercises
 the "_a" side, since B was never stale. Both complete-pair files hold
 CASE_8_ORDERS_COMPLETE; the "_a" stale file alone differs, holding
 CASE_8_ORDERS_STALE_A.
+
+Case 9 (Build 2, Day 3) follows the identical seed_table/
+freshness_complete_seed_table pairing convention as Case 8 -- only the
+seed DATA differs, in a way specifically chosen to read as a genuine
+missing partition rather than a relabeled Case 8. Case 8's stale file is
+missing one scattered row (order_id 3) with no structural relationship to
+the rows that remain. Case 9's stale file is missing BOTH rows for a
+single order_date ('2024-01-10') entirely -- every row in that date-slice
+is gone, while a different date (2024-02-01) with its own row is
+untouched. order_date is a natural partition key for a synthetic orders
+table (the same column every real-world date-partitioned orders table
+would partition on), so "every row for one order_date is absent" reads as
+a genuine partition boundary, not an arbitrary row subset picked to hit a
+target row count.
 """
 
 from pathlib import Path
@@ -164,6 +178,23 @@ CASE_8_ORDERS_STALE_A = [
     (4, 1, 50.0, "cancelled", "2023-12-01"),
 ]
 
+# --- Case 9: missing partition (Build 2, Day 3). source_a's stale extract
+# is missing the ENTIRE '2024-01-10' date-slice (order_id 1 and 2, both
+# rows), not a scattered single row -- a genuine contiguous partition
+# absent, distinct from Case 8's scattered single-row gap. source_b
+# already reflects the complete data, matching Case 8's "only A has a
+# freshness cause" pattern exactly. ---
+CASE_9_ORDERS_COMPLETE = [
+    (1, 1, 100.0, "active", "2024-01-10"),
+    (2, 1, 150.0, "active", "2024-01-10"),   # same date-slice as order_id 1
+    (3, 1, 200.0, "active", "2024-02-01"),
+    (4, 1, 50.0, "cancelled", "2023-12-01"), # excluded by status regardless
+]
+CASE_9_ORDERS_STALE_A = [
+    (3, 1, 200.0, "active", "2024-02-01"),
+    (4, 1, 50.0, "cancelled", "2023-12-01"),
+]
+
 # --- Case 7: precedence-rule conflict. order_id 2 (cancelled) is wrongly
 # INCLUDED by A's as-written SQL (which only excludes 'refunded', not
 # 'cancelled' as A declares) -- A's SQL under-excludes relative to its own
@@ -224,6 +255,11 @@ def build_all() -> None:
     _seed_file("case_08_stale_extract", "b", (_build_orders_table, CASE_8_ORDERS_COMPLETE))
     _seed_file("case_08_stale_extract_complete", "a", (_build_orders_table, CASE_8_ORDERS_COMPLETE))
     _seed_file("case_08_stale_extract_complete", "b", (_build_orders_table, CASE_8_ORDERS_COMPLETE))
+
+    _seed_file("case_09_missing_partition", "a", (_build_orders_table, CASE_9_ORDERS_STALE_A))
+    _seed_file("case_09_missing_partition", "b", (_build_orders_table, CASE_9_ORDERS_COMPLETE))
+    _seed_file("case_09_missing_partition_complete", "a", (_build_orders_table, CASE_9_ORDERS_COMPLETE))
+    _seed_file("case_09_missing_partition_complete", "b", (_build_orders_table, CASE_9_ORDERS_COMPLETE))
 
 
 if __name__ == "__main__":
