@@ -354,6 +354,54 @@ CASE_9_MISSING_PARTITION = Scenario(
     freshness_complete_seed_table="case_09_missing_partition_complete",
 )
 
+# Case 10: referential integrity (Build 2, Day 4). Single freshness/quality
+# cause only, no definitional or structural cause present (identical SQL
+# both sides, no declared definitions) -- matches Case 8/9's clean-fixture
+# shape. Distinct mechanism from Case 8/9: source_a's orders (fact) table
+# has one row referencing a customer_id (99) absent from the customers
+# (dimension) table shared by both sides -- a genuine orphan foreign-key
+# reference, not a row-count/completeness issue. source_b's orders table
+# simply omits that row, representing the trustworthy state. No
+# freshness_complete_seed_table is used here (unlike Case 8/9): referential
+# integrity's dollar-impact counterfactual is computed within a single
+# database (baseline query vs. the same query with an added FK-resolves
+# filter, src/data_quality.py's check_referential_integrity), not across a
+# stale/complete snapshot pair -- a genuinely different arithmetic shape,
+# matching the different detection mechanism. reported_value_a (600.0) and
+# reported_value_b (300.0) are real execution figures (scripts/build_seed_data.py,
+# verified directly against the actual seed files), per decision 13's
+# calibration convention.
+CASE_10_REFERENTIAL_INTEGRITY = Scenario(
+    scenario_id="case_10_referential_integrity",
+    description=(
+        "Referential integrity: source_a's orders (fact) table has an "
+        "orphan row referencing a customer_id absent from the customers "
+        "(dimension) table -- no definitional or structural cause "
+        "present, isolating the referential-integrity mechanism the way "
+        "Case 8/9 isolate their own completeness mechanism."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE status NOT IN ('cancelled') AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE status NOT IN ('cancelled') AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    ),
+    reported_value_a=600.0,
+    reported_value_b=300.0,
+    known_gap=600.0 - 300.0,
+    seed_table="case_10_referential_integrity",
+)
+
 SCENARIOS = [
     CASE_1_JOIN_TYPE,
     CASE_2_MULTI_CAUSE,
@@ -363,19 +411,21 @@ SCENARIOS = [
     CASE_6_NEGATIVE_CONTROL,
     CASE_7_PRECEDENCE_CONFLICT,
 ]
-"""CASE_8_STALE_EXTRACT and CASE_9_MISSING_PARTITION are both deliberately
-NOT included here (Build 2, Days 2-3). Every test/tool that iterates
-SCENARIOS runs the full deterministic pipeline via
-assemble_investigation_evidence (src/reconciliation_assembly.py), which
-does not call check_stale_extract or check_missing_partition and always
-returns data_quality_issues=[] -- adding either case to this list today
+"""CASE_8_STALE_EXTRACT, CASE_9_MISSING_PARTITION, and
+CASE_10_REFERENTIAL_INTEGRITY are all deliberately NOT included here
+(Build 2, Days 2-4). Every test/tool that iterates SCENARIOS runs the full
+deterministic pipeline via assemble_investigation_evidence
+(src/reconciliation_assembly.py), which does not call check_stale_extract,
+check_missing_partition, or check_referential_integrity and always returns
+data_quality_issues=[] -- adding any of these cases to this list today
 would make it silently look identical to Case 5 (100% unexplained
 residual, "no cause found") to every one of those tests, which is not true
 and would be a misleading regression surface, not a real one. Wiring
 data_quality_issues into assemble_investigation_evidence is explicitly out
-of scope for this session; both cases are exercised directly
-(tests/test_data_quality.py) until that wiring exists. Both cases share
-ONE trigger condition for re-inclusion: the moment assemble_investigation_evidence
-calls either detection function, add BOTH Case 8 and Case 9 to SCENARIOS
-together, re-run the full suite, and re-verify both through the explainer
--- not just whichever one prompted the wiring change."""
+of scope for this session; all three cases are exercised directly
+(tests/test_data_quality.py) until that wiring exists. All three share ONE
+trigger condition for re-inclusion: the moment assemble_investigation_evidence
+calls any of the three detection functions, add Case 8, Case 9, AND Case
+10 to SCENARIOS together, re-run the full suite, and re-verify all three
+through the explainer -- not just whichever one prompted the wiring
+change."""

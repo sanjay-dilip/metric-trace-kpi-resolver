@@ -1,8 +1,35 @@
-"""Deterministic data-quality/freshness pre-check (Build 2, Day 2-3). Per the
+"""Deterministic data-quality/freshness pre-check (Build 2, Days 2-4). Per the
 locked architecture decision (Build 2, Day 1): this is a plain, directly
 callable module, exactly like src/sql_diff.py or src/self_consistency.py --
 not an LLM-directed agent, no orchestration, nothing LangGraph-related.
 That packaging question does not arise again until Build 4.
+
+check_referential_integrity (Day 4) is a GENUINELY DISTINCT mechanism from
+check_stale_extract/check_missing_partition, not a third row-count-diff
+category wearing a new label. It tests whether every foreign-key value in a
+fact-style table resolves to an existing row in a dimension-style table --
+a relational-integrity question, not a completeness/row-count question. It
+uses a different arithmetic primitive too: single_cause_attribution (one
+database, two SQL variants -- baseline vs. "FK-filtered"), the same shape
+self-consistency's own corrected-query pattern uses, not
+freshness_attribution's "same query, two databases" shape _check_completeness
+relies on. This was a locked design requirement for Day 4, verified directly
+against this project's own committed seed data before writing any detection
+logic: Case 1 (tests/fixtures/scenarios.py, scripts/build_seed_data.py) is
+the one existing fixture with a genuine fact/dimension relationship
+(orders.customer_id -> customers.customer_id), and its data already
+contains a real orphan reference (order_id=3, customer_id=99) -- but that
+orphan is identical on both sides of Case 1 and serves an entirely
+different diagnostic purpose (the join-type SQL-structural diff), not a
+cross-source data-quality discrepancy, so it could not be reused as Case
+10's fixture data. Case 10 reuses the EXISTING table-building helpers
+(_build_customers_table, _build_orders_table, already defined for Case 1)
+-- the schema itself was not reinvented -- but its row data is new,
+authored specifically to isolate a referential-integrity cause the way
+Case 8/9 isolate their own freshness causes. A self-referencing nullable
+column within one table was explicitly considered and rejected for
+simulating this (not an honest representation of the category) -- Case 10
+uses two real tables with a real foreign-key relationship between them.
 
 check_stale_extract and check_missing_partition (Day 3) are deliberately
 scoped as a single COMPLETENESS-diff mechanism, framed as two different
@@ -36,7 +63,7 @@ from typing import Literal
 
 import duckdb
 
-from src.reconciliation import freshness_attribution
+from src.reconciliation import freshness_attribution, single_cause_attribution
 from src.schema import DataQualityIssue
 
 _CONFIDENCE = "high"
@@ -196,4 +223,138 @@ def check_missing_partition(
     test, which confirms this is by design, not a bug."""
     return _check_completeness(
         complete_db_path, stale_db_path, table_name, query_sql, source, "missing_partition"
+    )
+
+
+def _orphan_count(
+    fact_db_path: str,
+    dimension_db_path: str,
+    fact_table: str,
+    dimension_table: str,
+    fk_column: str,
+    dimension_key_column: str,
+) -> int:
+    """Count fact rows whose `fk_column` value has no matching row in
+    `dimension_table`'s `dimension_key_column`. When `fact_db_path` and
+    `dimension_db_path` are the same file (Case 10's own shape -- both
+    tables live in one DuckDB file, same as Case 1's precedent), the
+    dimension table is queried directly by name on the single open
+    connection. When they differ (used only by this module's own
+    cross-category discrimination test, running the check against Case
+    8/9's fact-only files with an external dimension file supplied), the
+    dimension file is ATTACHed read-only under an alias so a single query
+    can join across both.
+
+    Assumes `fk_column` is never NULL across every row tested -- none of
+    this project's committed fixtures (Case 1 or Case 10) populate a
+    nullable FK. A genuinely optional/nullable FK (where NULL correctly
+    means "no reference intended," not an orphan) would need NULL-aware
+    handling this function does not attempt; that is a different, untested
+    shape, not the orphan-reference shape Case 10 tests.
+    """
+    con = duckdb.connect(fact_db_path, read_only=True)
+    try:
+        if fact_db_path == dimension_db_path:
+            dimension_ref = dimension_table
+        else:
+            con.execute(f"ATTACH '{dimension_db_path}' AS dim_db (READ_ONLY)")
+            dimension_ref = f"dim_db.{dimension_table}"
+        query = (
+            f"SELECT COUNT(*) FROM {fact_table} "
+            f"WHERE {fk_column} NOT IN (SELECT {dimension_key_column} FROM {dimension_ref})"
+        )
+        return int(con.execute(query).fetchone()[0])
+    finally:
+        con.close()
+
+
+def check_referential_integrity(
+    fact_db_path: str,
+    dimension_db_path: str,
+    fact_table: str,
+    dimension_table: str,
+    fk_column: str,
+    dimension_key_column: str,
+    query_sql: str,
+    source: Literal["a", "b"],
+) -> DataQualityIssue | None:
+    """Referential-integrity detection (Build 2, Day 4): does every
+    `fk_column` value in `fact_table` resolve to an existing
+    `dimension_key_column` value in `dimension_table`? This is a
+    genuinely distinct mechanism from check_stale_extract/
+    check_missing_partition (see this module's docstring) -- a relational
+    lookup, not a row-count comparison -- and cannot fire or be confused
+    with either of those checks: it does not compare two snapshots of the
+    same table at all, and this module's own cross-category discrimination
+    test (test_data_quality.py) confirms directly that it returns None on
+    Case 8/9's data (every FK value there resolves against a supplied
+    dimension table), the inverse of Day 3's discrimination proof.
+
+    Returns None when zero orphan rows exist. When one or more do, returns
+    a populated DataQualityIssue with category="referential_integrity",
+    confidence="high" (see _CONFIDENCE -- a COUNT(*) orphan check is just
+    as mechanically exact as a row-count diff), a description stating the
+    orphan count, and a real, execution-derived dollar_impact:
+    `single_cause_attribution` (src/reconciliation.py, the same
+    one-database/two-SQL-variant shape self-consistency's own
+    corrected-query pattern uses, not freshness_attribution's two-database
+    shape) compares `query_sql` (baseline, as-written) against a
+    "FK-filtered" corrected variant -- `query_sql` with an added
+    `AND {fk_column} IN (SELECT {dimension_key_column} FROM {dimension_table})`
+    clause, run against `fact_db_path`. This string-append approach
+    requires `query_sql` to already contain a WHERE clause, true of every
+    fixture query in this project (Case 1/4/6/7/8/9/10 all do) -- a
+    deliberate, documented scope narrowing to this project's own committed
+    query shapes, the same kind of pragmatic limit src/query_mutation.py's
+    rule-based mutators already accept, not a general SQL-rewriting engine.
+    It also assumes `dimension_table` is queryable by that bare name in
+    `fact_db_path` (true whenever fact and dimension are co-located in one
+    file, Case 10's shape) -- the dollar-impact computation, unlike
+    `_orphan_count` above, does not support a cross-database fact/dimension
+    split; the only place this module needs that split is the
+    discrimination test above, which never reaches this branch (Case 8/9
+    have zero orphans against the dimension supplied to them).
+
+    The raw (corrected - baseline) delta is signed with the EXACT
+    convention already established for SelfConsistencyIssue.dollar_impact
+    and _check_completeness's own dollar_impact: negated for source="a",
+    used as-is for source="b" -- no new sign rule invented for this cause
+    type either.
+
+    Cross-category interaction with a DefinitionDifference/
+    SQLStructuralDifference/other DataQualityIssue on the same fixture's
+    overlapping rows is untested and out of scope (Build 2, Day 1's own
+    stated boundary, mirroring decision 11) -- this function assumes the
+    query result difference is attributable to the orphan reference alone,
+    which only holds for a fixture built the way Case 10 is (referential
+    integrity is the sole cause present). This function also does not
+    resolve, and deliberately does not need to resolve, the still-open
+    check_stale_extract/check_missing_partition dispatch-rule question
+    (CONTEXT.md Open Items): that item concerns two mechanism-identical
+    row-count checks firing on the same completeness-style input, which
+    this function's relational-lookup mechanism and dimension-table
+    requirement never trigger.
+    """
+    orphan_count = _orphan_count(
+        fact_db_path, dimension_db_path, fact_table, dimension_table, fk_column, dimension_key_column
+    )
+    if orphan_count == 0:
+        return None
+
+    corrected_sql = (
+        f"{query_sql} AND {fk_column} IN (SELECT {dimension_key_column} FROM {dimension_table})"
+    )
+    raw_delta = single_cause_attribution(fact_db_path, query_sql, corrected_sql)
+    dollar_impact = -raw_delta if source == "a" else raw_delta
+
+    return DataQualityIssue(
+        category="referential_integrity",
+        source=source,
+        description=(
+            f"source_{source}'s '{fact_table}' has {orphan_count} row(s) whose "
+            f"'{fk_column}' value does not match any '{dimension_key_column}' in "
+            f"'{dimension_table}'."
+        ),
+        confidence=_CONFIDENCE,
+        dollar_impact=dollar_impact,
     )
