@@ -57,6 +57,23 @@ table (the same column every real-world date-partitioned orders table
 would partition on), so "every row for one order_date is absent" reads as
 a genuine partition boundary, not an arbitrary row subset picked to hit a
 target row count.
+
+Case 10 (Build 2, Day 4) reuses the existing customers/orders table
+schema (_build_customers_table, _build_orders_table -- the same functions
+Case 1 already uses) rather than inventing a new fact/dimension shape --
+Case 1's own data was confirmed (src/data_quality.py's module docstring)
+to already have a real customers-dimension/orders-fact relationship with
+a real orphan reference, but that orphan is identical on both of Case 1's
+sides and serves a different diagnostic purpose (join-type SQL diff), so
+it could not be reused as Case 10's fixture data. Case 10's OWN data is
+new: source_a's orders table contains a genuine orphan row (customer_id=99,
+which no row in customers has); source_b's orders table simply omits that
+row -- source_b's data represents the trustworthy state, the same
+"only A has the freshness/quality cause" pattern Case 8/9 already use.
+Both sides' customers dimension table is identical (customer_id 1 and 2
+only) -- the discrepancy lives entirely in orders, matching a real-world
+scenario where a fact table gains a phantom row referencing a customer
+that was deleted or never created upstream, not a dimension-side problem.
 """
 
 from pathlib import Path
@@ -195,6 +212,25 @@ CASE_9_ORDERS_STALE_A = [
     (4, 1, 50.0, "cancelled", "2023-12-01"),
 ]
 
+# --- Case 10: referential integrity (Build 2, Day 4). Both sides share the
+# same customers dimension (customer_id 1 and 2 only). source_a's orders
+# fact table has a genuine orphan row (order_id 3, customer_id=99 -- no
+# such customer exists); source_b's orders table simply doesn't have that
+# row, representing the trustworthy state (only A has the data-quality
+# cause, matching Case 8/9's own pattern). ---
+CASE_10_CUSTOMERS = [(1, "active", "2024-01-01"), (2, "active", "2024-01-01")]
+CASE_10_ORDERS_A = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 2, 200.0, "active", "2024-03-01"),
+    (3, 99, 300.0, "active", "2024-01-15"),  # orphan: customer_id 99 does not exist
+    (4, 1, 50.0, "cancelled", "2023-12-01"), # excluded by status regardless
+]
+CASE_10_ORDERS_B = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 2, 200.0, "active", "2024-03-01"),
+    (4, 1, 50.0, "cancelled", "2023-12-01"),
+]
+
 # --- Case 7: precedence-rule conflict. order_id 2 (cancelled) is wrongly
 # INCLUDED by A's as-written SQL (which only excludes 'refunded', not
 # 'cancelled' as A declares) -- A's SQL under-excludes relative to its own
@@ -260,6 +296,17 @@ def build_all() -> None:
     _seed_file("case_09_missing_partition", "b", (_build_orders_table, CASE_9_ORDERS_COMPLETE))
     _seed_file("case_09_missing_partition_complete", "a", (_build_orders_table, CASE_9_ORDERS_COMPLETE))
     _seed_file("case_09_missing_partition_complete", "b", (_build_orders_table, CASE_9_ORDERS_COMPLETE))
+
+    _seed_file(
+        "case_10_referential_integrity", "a",
+        (_build_customers_table, CASE_10_CUSTOMERS),
+        (_build_orders_table, CASE_10_ORDERS_A),
+    )
+    _seed_file(
+        "case_10_referential_integrity", "b",
+        (_build_customers_table, CASE_10_CUSTOMERS),
+        (_build_orders_table, CASE_10_ORDERS_B),
+    )
 
 
 if __name__ == "__main__":
