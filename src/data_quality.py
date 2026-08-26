@@ -79,19 +79,35 @@ def check_stale_extract(
     negated for source="a", used as-is for source="b" -- no new sign
     rule invented for this cause type.
 
-    Beyond this session's scope, deliberately not attempted here: this
-    function extends beyond the three bare parameters (complete_db_path,
-    stale_db_path, table_name) originally sketched for it, because a
-    caller needs `query_sql` and `source` to compute a real dollar_impact
-    and set DataQualityIssue.source correctly -- a row-count-only check
-    could report that an extract is incomplete, but not by how much it is
-    worth, which this session's brief explicitly requires. Cross-category
-    interaction with a DefinitionDifference/SQLStructuralDifference on
-    the same fixture's overlapping rows is untested and out of scope
-    (Build 2, Day 1's own stated boundary, mirroring decision 11) --
-    this function assumes the query result difference is attributable to
-    staleness alone, which only holds for a fixture built the way Case 8
-    is (freshness is the sole cause present).
+    Signature extended beyond the three bare parameters (complete_db_path,
+    stale_db_path, table_name) originally sketched for it -- `query_sql`
+    and `source` were added because a caller needs both to compute a real
+    dollar_impact and set DataQualityIssue.source correctly; a
+    row-count-only check could report that an extract is incomplete, but
+    not by how much it is worth, which this session's own brief
+    explicitly requires. This is flagged here, but deliberately NOT
+    logged as a docs/decisions.md entry the way decision 15 was, and that
+    is itself a judgment call worth stating rather than leaving to
+    infer: decision 15 was a genuine reinterpretation of an existing
+    field's semantics (seed_table silently means something additional for
+    a subset of scenarios) -- a real architectural choice with a lasting
+    tradeoff a future reader could be misled by. This signature extension
+    is neither: query_sql and source aren't reinterpreted, they're new
+    parameters added because the function's own stated job (a real,
+    correctly-signed dollar_impact) is mechanically impossible to satisfy
+    without them -- the same shape as Day 6's dollar_impact placeholder
+    naturally growing a real signature once execution was required,
+    not a semantic pivot. Nothing about this changes what any EXISTING
+    field or function means, so there is nothing for a decisions.md entry
+    to protect a future reader from missing.
+
+    Cross-category interaction with a DefinitionDifference/
+    SQLStructuralDifference on the same fixture's overlapping rows is
+    untested and out of scope (Build 2, Day 1's own stated boundary,
+    mirroring decision 11) -- this function assumes the query result
+    difference is attributable to staleness alone, which only holds for
+    a fixture built the way Case 8 is (freshness is the sole cause
+    present).
     """
     complete_count = _row_count(complete_db_path, table_name)
     stale_count = _row_count(stale_db_path, table_name)
