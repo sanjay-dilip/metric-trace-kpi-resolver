@@ -533,11 +533,20 @@ CASE_12_JOIN_ORPHAN_COLLISION = Scenario(
 # (300.0), reported_value_b (450.0), and known_gap (-150.0) are real
 # execution figures, per decision 13's calibration convention.
 #
-# EXCLUSION REASON, stated explicitly, same as Case 12: collision proof
-# fixture, no suppression rule exists yet -- including it in SCENARIOS
-# would let two tools silently double-count the same fact in any pipeline
-# run. No data-quality check or dispatch entry is involved for this
-# fixture at all. NOT added to SCENARIOS.
+# EXCLUSION REASON, updated Build 3 Day 1 Part 6: the double-counting risk
+# this exclusion originally guarded against is now resolved --
+# assemble_structural_and_definitional_evidence's third rule
+# (_same_filter_exclusion_fact, src/self_consistency.py) correctly
+# suppresses this fixture's excluded_statuses DefinitionDifference in
+# favor of the surviving filter SQLStructuralDifference, confirmed by
+# execution. Still NOT added to SCENARIOS, for a different, narrower
+# reason now: the surviving filter finding has no corrected-query
+# mutation rule (construct_corrected_query, src/query_mutation.py), so
+# assemble_investigation_evidence still raises for this scenario --
+# blocked purely on filter's missing correction mechanism, not on any
+# remaining collision/double-counting concern. No data-quality check or
+# dispatch entry is involved for this fixture at all. NOT added to
+# SCENARIOS.
 CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION = Scenario(
     scenario_id="case_13_filter_excluded_statuses_collision",
     description=(
