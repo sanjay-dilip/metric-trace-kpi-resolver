@@ -47,12 +47,16 @@ interact in the first place.
 Deterministic only -- no LLM calls anywhere.
 """
 
+from typing import Callable
+
 from config import DATA_SAMPLE_DIR
+from src.data_quality import check_missing_partition, check_referential_integrity, check_stale_extract
 from src.definition_diff import diff_definitions
 from src.query_mutation import construct_corrected_query
 from src.reconciliation import shapley_pair_attribution, single_cause_attribution
 from src.scenario import DashboardSource, Scenario
 from src.schema import (
+    DataQualityIssue,
     DefinitionDifference,
     InvestigationEvidence,
     ReconciliationLineItem,
@@ -211,6 +215,91 @@ def assemble_reconciliation_line_items(
     return line_items
 
 
+def _case_08_stale_extract(scenario: Scenario, seed_db_path_a: str, seed_db_path_b: str) -> DataQualityIssue | None:
+    complete_db_path_a = str(DATA_SAMPLE_DIR / f"{scenario.freshness_complete_seed_table}_a.duckdb")
+    return check_stale_extract(complete_db_path_a, seed_db_path_a, "orders", scenario.source_a.sql, "a")
+
+
+def _case_09_missing_partition(scenario: Scenario, seed_db_path_a: str, seed_db_path_b: str) -> DataQualityIssue | None:
+    complete_db_path_a = str(DATA_SAMPLE_DIR / f"{scenario.freshness_complete_seed_table}_a.duckdb")
+    return check_missing_partition(complete_db_path_a, seed_db_path_a, "orders", scenario.source_a.sql, "a")
+
+
+def _case_10_referential_integrity(
+    scenario: Scenario, seed_db_path_a: str, seed_db_path_b: str
+) -> DataQualityIssue | None:
+    return check_referential_integrity(
+        seed_db_path_a, seed_db_path_a, "orders", "customers", "customer_id", "customer_id",
+        scenario.source_a.sql, "a",
+    )
+
+
+def _case_11_referential_integrity_source_b(
+    scenario: Scenario, seed_db_path_a: str, seed_db_path_b: str
+) -> DataQualityIssue | None:
+    return check_referential_integrity(
+        seed_db_path_b, seed_db_path_b, "orders", "customers", "customer_id", "customer_id",
+        scenario.source_b.sql, "b",
+    )
+
+
+_DATA_QUALITY_DISPATCH: dict[str, Callable[[Scenario, str, str], DataQualityIssue | None]] = {
+    "case_08_stale_extract": _case_08_stale_extract,
+    "case_09_missing_partition": _case_09_missing_partition,
+    "case_10_referential_integrity": _case_10_referential_integrity,
+    "case_11_referential_integrity_source_b": _case_11_referential_integrity_source_b,
+}
+"""Build 2, Day 5 dispatch point (decision locked in chat, Option B): only
+ONE data-quality check is ever invoked per scenario, chosen by
+`scenario.scenario_id` against this fixed, hand-authored lookup table --
+not by any runtime inspection of the scenario's data, and not by trying
+every check and reconciling collisions between them. `check_stale_extract`
+and `check_missing_partition` are mechanism-identical (Day 3,
+`_check_completeness`) and provably fire identically on the same
+row-count-diff input (the cross-category discrimination test,
+test_data_quality.py); there is no way to tell, from a Scenario object
+alone, which category label is the "honest" one for a given fixture --
+that knowledge exists only in how the fixture's seed data was
+constructed, by whoever authored it. Building a general "same underlying
+fact" collision detector between these two functions (the way decisions
+10/12 built one between sql_diff and definition_diff findings) was
+explicitly rejected as disproportionate: those two SQL-diff tools each
+detect something structurally different that can *coincidentally* trace
+to the same fact; check_stale_extract/check_missing_partition are the
+literal same function under two names, so any input that makes one fire
+makes the other fire too, always, by construction -- there's no partial
+overlap to detect, only a binary choice.
+
+**Named, open limitation, not a solved problem:** this table only covers
+the four scenarios this project has authored a data-quality cause for. A
+future, unlabeled scenario -- one nobody has hand-classified into this
+table -- gets zero data-quality issues from this dispatch (see
+_resolve_data_quality_issues below), not an automatic guess at which
+check might apply. Build 3's benchmark-authoring pass, which will
+introduce new freshness/quality scenarios at 20-30x this project's
+current fixture count, MUST decide how new scenarios get correctly
+classified before assuming this table scales -- hand-maintaining one
+dict entry per scenario does not obviously survive that jump, and no
+solution to that is proposed or implied here.
+"""
+
+
+def _resolve_data_quality_issues(scenario: Scenario, seed_db_path_a: str, seed_db_path_b: str) -> list[DataQualityIssue]:
+    """Look up scenario.scenario_id in _DATA_QUALITY_DISPATCH and run the
+    one check it names, if any. A scenario_id with no entry returns []
+    silently -- not an error, and not a guess. This is deliberate: guessing
+    which of three mechanism-distinct checks might apply to an
+    unclassified scenario would be exactly the kind of silent gap-patching
+    this project has repeatedly caught itself doing and stopped doing
+    (assemble_investigation_evidence's own 3+-remaining-causes guard,
+    below, refuses to guess for the same reason)."""
+    check = _DATA_QUALITY_DISPATCH.get(scenario.scenario_id)
+    if check is None:
+        return []
+    issue = check(scenario, seed_db_path_a, seed_db_path_b)
+    return [issue] if issue is not None else []
+
+
 def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence:
     """Build 1, Day 7, Task 2 -- the completion gate for the deterministic
     core. Runs the FULL pipeline for one scenario end to end: sql_diff,
@@ -256,14 +345,54 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
     that owns resolving them, since it is the one function that owns a
     whole Scenario rather than two bare DashboardSources.
 
-    data_quality_issues (src/schema.py, Build 2, Day 1) is always
-    returned empty here -- no freshness/data-quality pre-check exists yet
-    to populate it (Build 2, Day 2+). Passed explicitly as [] rather than
-    given a schema-level default, matching every other finding-list
-    field's convention on InvestigationEvidence.
+    data_quality_issues (src/schema.py, Build 2, Day 1) is populated as of
+    Build 2, Day 5 -- via _resolve_data_quality_issues's fixture-authored
+    dispatch table, above -- for the four scenarios this project has a
+    known data-quality cause for (Cases 8-11). Every other scenario still
+    gets [] (no data-quality check applies, or none is known to).
+
+    **data_quality_issues is ADDITIVE EVIDENCE ONLY (Build 2, Day 5,
+    locked decision, Option B -- not full integration). Read this before
+    trusting unexplained_residual for any scenario where
+    data_quality_issues is non-empty:** data_quality_issues does NOT
+    participate in assemble_reconciliation_line_items, the
+    Shapley-pair/single-cause attribution machinery, or the
+    unexplained_residual calculation below. A DataQualityIssue's own
+    dollar_impact field is real and execution-derived (src/data_quality.py),
+    but it is never summed into total_dollar_impact and never subtracted
+    out of unexplained_residual. Concretely, for Case 8 (a real, found,
+    fully-quantified stale_extract cause with dollar_impact == known_gap
+    exactly): evidence.reconciliation is [] and evidence.unexplained_residual
+    equals known_gap in full, THE SAME AS Case 5's true "no cause exists"
+    scenario -- even though Case 8's cause is fully known and fully
+    quantified, just not folded into this arithmetic. **For any scenario
+    with a non-empty data_quality_issues list, unexplained_residual is NOT
+    a meaningful "how much is genuinely unexplained" figure -- it is
+    "how much the definitional/structural/self-consistency machinery
+    alone did not explain," which is a different, narrower claim.**
+
+    This is deliberate, not an oversight: decision 11 already deferred
+    definitional-vs-structural cause interaction as unproven (untested by
+    any of the first 7 fixtures); freshness-vs-definitional/structural
+    interaction is equally unproven -- no fixture in this project pairs a
+    data-quality cause with a definitional or structural one on
+    overlapping rows, so there is no evidence folding a DataQualityIssue's
+    dollar_impact into the same Shapley/residual math would even be
+    correct if attempted. Folding it in anyway would silently assume
+    interaction-safety nobody has tested, exactly the mistake Day 7's
+    date_field discovery (decision 12) caught and fixed before it shipped
+    -- here it is being named and left unresolved instead, since Cases
+    8-11 are all single-cause-only fixtures where "fold it in" and "don't"
+    happen to be indistinguishable by any test this session could write
+    (there is no interacting second cause to get wrong). Build 3's
+    benchmark-authoring pass, once it introduces a scenario pairing a
+    data-quality cause with a definitional/structural one, is where this
+    gets resolved for real -- not assumed away here.
     """
     seed_db_path_a = str(DATA_SAMPLE_DIR / f"{scenario.seed_table}_a.duckdb")
     seed_db_path_b = str(DATA_SAMPLE_DIR / f"{scenario.seed_table}_b.duckdb")
+
+    data_quality_issues = _resolve_data_quality_issues(scenario, seed_db_path_a, seed_db_path_b)
 
     sql_differences = diff_sql(parse_sql(scenario.source_a.sql), parse_sql(scenario.source_b.sql))
     definition_differences, self_consistency_issues = assemble_definitional_evidence_with_dollar_impacts(
@@ -301,7 +430,7 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
         definition_differences=definition_differences,
         self_consistency_issues=self_consistency_issues,
         sql_differences=sql_differences,
-        data_quality_issues=[],
+        data_quality_issues=data_quality_issues,
         reconciliation=line_items,
         unexplained_residual=unexplained_residual,
     )

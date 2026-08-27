@@ -3,16 +3,16 @@
 Runs the full pipeline for a scenario and computes unexplained_residual =
 known_gap - sum(line_item.dollar_impact for all line items).
 
-Two things are proven separately here, on purpose, because they are NOT
+Three things are proven separately here, on purpose, because they are NOT
 the same claim:
 
-1. sum(line_items) + unexplained_residual == known_gap, EXACTLY, for all 7
-   fixtures. This holds by algebraic construction (unexplained_residual is
-   DEFINED as known_gap minus the total), the same caveat already
-   documented on shapley_pair_attribution's own sum-check
-   (src/reconciliation.py): it proves there's no arithmetic bug in how the
-   residual is computed, not that the residual is small or that every real
-   cause was found.
+1. sum(line_items) + unexplained_residual == known_gap, EXACTLY, for every
+   fixture in SCENARIOS. This holds by algebraic construction
+   (unexplained_residual is DEFINED as known_gap minus the total), the
+   same caveat already documented on shapley_pair_attribution's own
+   sum-check (src/reconciliation.py): it proves there's no arithmetic bug
+   in how the residual is computed, not that the residual is small or
+   that every real cause was found.
 
 2. Whether unexplained_residual is actually SMALL is a separate, genuine
    claim, checked case by case below. Originally (Day 7 Task 2) it was NOT
@@ -27,9 +27,20 @@ the same claim:
    against its own seed data (Case 5 and Case 6 turned out to already be
    correctly calibrated -- verified, not assumed -- so their numbers did
    not change). Case 7 was already calibrated (Day 4 close-out) and was
-   left untouched. Every fixture now shows a residual of 0.0% except Case
-   5, whose 100% residual is the deliberate design intent (no findable
-   cause exists) -- confirmed case by case below, not just asserted."""
+   left untouched. Cases 1-4 and 7 show a residual of exactly 0.0; Case 5's
+   100% residual is the deliberate design intent (no findable cause
+   exists) -- confirmed case by case below, not just asserted.
+
+3. Cases 8-11 (Build 2, Day 5, added to SCENARIOS once
+   data_quality_issues was wired into assemble_investigation_evidence)
+   each show a 100%-of-known_gap residual too -- but UNLIKE Case 5, this
+   is NOT "no cause exists." Each of these four has a real, found,
+   fully-quantified data-quality cause (visible in
+   evidence.data_quality_issues), deliberately NOT folded into
+   unexplained_residual (additive-evidence-only, see
+   assemble_investigation_evidence's own docstring for the full
+   reasoning). Tested explicitly below, per case, so this distinction is
+   proven rather than left to be confused with Case 5's shape."""
 
 import math
 
@@ -47,17 +58,26 @@ from tests.fixtures.scenarios import (
     CASE_5_UNEXPLAINED_RESIDUAL,
     CASE_6_NEGATIVE_CONTROL,
     CASE_7_PRECEDENCE_CONFLICT,
+    CASE_8_STALE_EXTRACT,
+    CASE_9_MISSING_PARTITION,
+    CASE_10_REFERENTIAL_INTEGRITY,
+    CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
     SCENARIOS,
 )
 
-_EXACT_TOLERANCE = 0.0  # see module docstring: the sum-check holds by exact float equality on all 7 fixtures
+_EXACT_TOLERANCE = 0.0  # see module docstring: the sum-check holds by exact float equality on every fixture
 
 
-def test_sum_check_holds_exactly_across_all_7_fixtures():
+def test_sum_check_holds_exactly_across_all_fixtures():
     """sum(line_items) + unexplained_residual == known_gap, exact float
     equality, no tolerance needed -- verified explicitly rather than
     assumed, since it's an algebraic identity of how unexplained_residual
-    is computed, not proof any given fixture's causes are complete."""
+    is computed, not proof any given fixture's causes are complete. Holds
+    trivially for Cases 8-11 too (reconciliation == [], so residual ==
+    known_gap by definition) -- this test proves no arithmetic bug, it
+    does NOT prove those four are "fully reconciled"; see
+    test_case_8_through_11_data_quality_additive_only below for that
+    distinction."""
     for scenario in SCENARIOS:
         evidence = assemble_investigation_evidence(scenario)
         total = sum(item.dollar_impact for item in evidence.reconciliation)
@@ -187,6 +207,59 @@ def test_case_7_residual_is_zero_fully_explained():
     assert len(evidence.reconciliation) == 1
     assert total == CASE_7_PRECEDENCE_CONFLICT.known_gap == 200.0
     assert evidence.unexplained_residual == 0.0
+
+
+@pytest.mark.parametrize(
+    "scenario, expected_category, expected_source, expected_dollar_impact",
+    [
+        (CASE_8_STALE_EXTRACT, "stale_extract", "a", -150.0),
+        (CASE_9_MISSING_PARTITION, "missing_partition", "a", -250.0),
+        (CASE_10_REFERENTIAL_INTEGRITY, "referential_integrity", "a", 300.0),
+        (CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B, "referential_integrity", "b", -300.0),
+    ],
+)
+def test_case_8_through_11_data_quality_additive_only(
+    scenario, expected_category, expected_source, expected_dollar_impact
+):
+    """Build 2, Day 5: proves the dispatch point (_resolve_data_quality_issues,
+    src/reconciliation_assembly.py) chooses correctly per fixture AND that
+    wiring data_quality_issues in is genuinely additive-only -- it does
+    NOT change reconciliation or unexplained_residual at all, for any of
+    the four cases. Each case's dollar_impact/category/source here matches
+    the exact figures already proven independently in
+    tests/test_data_quality.py's own dedicated firing tests -- re-asserted
+    here specifically through the full assemble_investigation_evidence
+    pipeline, not just the bare check_* function, to prove the dispatch
+    wiring itself (not just the underlying check) is correct."""
+    evidence = assemble_investigation_evidence(scenario)
+
+    assert len(evidence.data_quality_issues) == 1
+    issue = evidence.data_quality_issues[0]
+    assert issue.category == expected_category
+    assert issue.source == expected_source
+    assert issue.dollar_impact == expected_dollar_impact
+
+    # Additive-only: reconciliation/unexplained_residual are exactly what
+    # they would be with data_quality_issues absent entirely -- the same
+    # shape as Case 5's true "no cause found" (reconciliation == [],
+    # residual == known_gap), even though a real cause WAS found here.
+    assert evidence.reconciliation == []
+    assert evidence.unexplained_residual == scenario.known_gap
+
+
+def test_case_1_has_no_data_quality_cause_dispatch_correctly_returns_empty():
+    """Negative-control side of the dispatch point: Case 1 has no entry in
+    _DATA_QUALITY_DISPATCH (src/reconciliation_assembly.py) -- confirms
+    the dispatch silently returns [] for a scenario_id it doesn't
+    recognize, rather than guessing or misfiring, even though Case 1's own
+    seed data has a real orphan FK row (order_id=3, customer_id=99,
+    documented in CONTEXT.md as a known, unresolved latent-collision risk
+    if check_referential_integrity were ever run against it directly --
+    this test only confirms today's dispatch table doesn't do that, not
+    that the underlying risk is resolved)."""
+    evidence = assemble_investigation_evidence(CASE_1_JOIN_TYPE)
+
+    assert evidence.data_quality_issues == []
 
 
 def test_raises_on_more_than_two_remaining_causes():
