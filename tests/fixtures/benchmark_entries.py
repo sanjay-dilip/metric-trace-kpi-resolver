@@ -55,6 +55,7 @@ class BenchmarkEntry(BaseModel):
     it into a different evidence field. None when no caveat applies."""
 
 
+# case_02_multi_cause is intentionally excluded from this list, pending magnitude recalibration (Build 3, Day 2, Part 2b).
 BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
     BenchmarkEntry(
         scenario=CASE_1_JOIN_TYPE,
