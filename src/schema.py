@@ -137,10 +137,11 @@ class InvestigationEvidence(BaseModel):
     SelfConsistencyIssue exists for a field, the corresponding cross-source
     DefinitionDifference for that same field is suppressed from
     definition_differences, not double-counted alongside it in reconciliation.
-    data_quality_issues (Build 2, Day 1) is not yet populated by any
-    assembly function -- reconciliation_assembly.py's assemble_investigation_evidence
-    still only fills the other four fields; wiring a freshness pre-check
-    into that function is Build 2, Day 2+ work, not this one.
+    data_quality_issues (schema added Build 2, Day 1; populated since Build
+    2, Day 5) is filled by reconciliation_assembly.py's
+    assemble_investigation_evidence as ADDITIVE EVIDENCE ONLY -- it does not
+    participate in reconciliation or unexplained_residual (see that
+    function's own docstring for the full reasoning).
 
     Decision 17 (docs/decisions.md): a data_quality_issues entry's
     dollar_impact may restate a cause already counted in reconciliation
