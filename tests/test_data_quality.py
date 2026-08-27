@@ -21,7 +21,13 @@ been proven by running the code with the cause on source_b. Case 11 is
 Case 10's exact mirror image, proving the sign-flip by execution rather
 than by code inspection alone -- the same shape of gap Day 6's
 self-consistency close-out found and closed with its own dedicated
-source="b" test."""
+source="b" test. Build 3, Day 1, Part 3 closes a real bug Part 2's Case 12
+surfaced: check_referential_integrity's dollar-impact step crashed with an
+ambiguous-column error on a JOIN-based query -- fixed via
+_fact_table_qualifier, proven here to no longer crash and to produce the
+real DataQualityIssue that completes overlap #7's proof, with Cases 10/11
+confirmed byte-identical (no regression) for the two fixtures that already
+proved this function's correctness pre-fix."""
 
 import duckdb
 
@@ -32,6 +38,7 @@ from tests.fixtures.scenarios import (
     CASE_9_MISSING_PARTITION,
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
+    CASE_12_JOIN_ORPHAN_COLLISION,
 )
 
 
@@ -241,3 +248,29 @@ def test_case_11_referential_integrity_source_b_dollar_impact_sign_flip_matches_
     assert issue.confidence == "high"
     assert "1 row(s)" in issue.description
     assert issue.dollar_impact == s.known_gap == -300.0
+
+
+def test_check_referential_integrity_no_longer_crashes_on_a_joined_query():
+    """Build 3, Day 1, Part 3 bug fix: Case 12 (Build 3, Day 1, Part 2)
+    surfaced a real duckdb.BinderException ("ambiguous reference to column
+    name 'customer_id'") when check_referential_integrity's dollar-impact
+    step appended an unqualified fk_column reference onto a query that
+    already joins fact_table to dimension_table on that same column --
+    Cases 10/11 never exercised this since neither query contains a JOIN.
+    _fact_table_qualifier now resolves the correct table/alias qualifier
+    for the appended clause. Confirms the fix directly: the call completes
+    (no exception) and returns the real, execution-derived DataQualityIssue
+    -- proving overlap #7 (join_type vs. referential_integrity, Build 3
+    Day 1 Part 1's inventory) with both findings actually observable side
+    by side, which Part 2 could not do."""
+    s = CASE_12_JOIN_ORPHAN_COLLISION
+    db = str(DATA_SAMPLE_DIR / f"{s.seed_table}_a.duckdb")
+
+    issue = check_referential_integrity(db, db, "orders", "customers", "customer_id", "customer_id", s.source_a.sql, "a")
+
+    assert issue is not None
+    assert issue.category == "referential_integrity"
+    assert issue.source == "a"
+    assert issue.confidence == "high"
+    assert "1 row(s)" in issue.description
+    assert issue.dollar_impact == s.known_gap == 300.0
