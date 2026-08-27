@@ -460,22 +460,39 @@ SCENARIOS = [
     CASE_5_UNEXPLAINED_RESIDUAL,
     CASE_6_NEGATIVE_CONTROL,
     CASE_7_PRECEDENCE_CONFLICT,
+    CASE_8_STALE_EXTRACT,
+    CASE_9_MISSING_PARTITION,
+    CASE_10_REFERENTIAL_INTEGRITY,
+    CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
 ]
-"""CASE_8_STALE_EXTRACT, CASE_9_MISSING_PARTITION,
-CASE_10_REFERENTIAL_INTEGRITY, and CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B
-are all deliberately NOT included here (Build 2, Days 2-4). Every
-test/tool that iterates SCENARIOS runs the full deterministic pipeline via
-assemble_investigation_evidence (src/reconciliation_assembly.py), which
-does not call check_stale_extract, check_missing_partition, or
-check_referential_integrity and always returns data_quality_issues=[] --
-adding any of these cases to this list today would make it silently look
-identical to Case 5 (100% unexplained residual, "no cause found") to
-every one of those tests, which is not true and would be a misleading
-regression surface, not a real one. Wiring data_quality_issues into
-assemble_investigation_evidence is explicitly out of scope for this
-session; all four cases are exercised directly (tests/test_data_quality.py)
-until that wiring exists. All four share ONE trigger condition for
-re-inclusion: the moment assemble_investigation_evidence calls any of the
-three detection functions, add Case 8, Case 9, Case 10, AND Case 11 to
-SCENARIOS together, re-run the full suite, and re-verify all four through
-the explainer -- not just whichever one prompted the wiring change."""
+"""Build 2, Day 5: Cases 8-11's exclusion trigger ("wire data_quality_issues
+into assemble_investigation_evidence") is now satisfied --
+_resolve_data_quality_issues (src/reconciliation_assembly.py) populates
+data_quality_issues for exactly these four scenario_ids -- so all four now
+join SCENARIOS, per that trigger's own stated condition.
+
+**Read this before trusting any full-SCENARIOS residual sweep or
+"all fixtures reconcile" claim involving Cases 8-11 specifically:**
+data_quality_issues is ADDITIVE EVIDENCE ONLY (Build 2, Day 5, locked
+decision) -- it does not participate in reconciliation/unexplained_residual
+math (see assemble_investigation_evidence's own docstring,
+src/reconciliation_assembly.py, for the full reasoning). For all four of
+these cases, evidence.reconciliation is [] and evidence.unexplained_residual
+equals known_gap in full, THE SAME SHAPE as Case 5's true "no cause exists"
+scenario -- even though Cases 8-11 each have a real, fully-quantified,
+found cause (visible only in evidence.data_quality_issues, not in the
+residual number). Do not read a full-SCENARIOS command/test that reports
+unexplained_residual as claiming these four are "fully reconciled" or
+"fully unexplained" -- neither framing is accurate; the correct framing is
+"the definitional/structural/self-consistency machinery found nothing,
+and separately, the data-quality check found something, and the two
+numbers are not combined yet."
+
+Also still separately deferred, unrelated to the above and NOT resolved
+this session: src/explainer.py does not render data_quality_issues in its
+prompt at all (Build 2, Day 1's original deferral, still standing) -- a
+live explainer run against any of these four cases will describe them as
+if no cause was found, the same prose shape as Case 5, since the
+evidence object it's handed simply omits data_quality_issues from its
+prompt text today. This is a second, independent gap from the residual-math
+one above, tracked separately in CONTEXT.md's Open Items."""
