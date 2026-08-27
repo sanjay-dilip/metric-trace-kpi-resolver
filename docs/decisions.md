@@ -39,11 +39,21 @@ If the baseline clears all three, the skeptic is cut from the shipped architectu
 
 **Reasoning:** Turns decision 4 into a decision the benchmark can actually make, instead of a subjective call after the fact.
 
-## 6. Open eval-design question: escalation accuracy denominator
+**Cross-reference:** decision 6 splits the second threshold above into two separate metrics (escalation recall and false-escalation rate) — the gate is now four-way, not three. See decision 6.
 
-**Decision:** Not yet resolved. Must be decided before Build 2 eval code is written: whether human-escalation accuracy (decision 5) is measured only against the true-ambiguous scenario subset, or against the full benchmark.
+## 6. Escalation accuracy resolved: split into escalation recall and false-escalation rate
 
-**Reasoning:** Over-escalation could inflate escalation accuracy while dragging down technical accuracy on borderline cases. The two metrics in decision 5 can fight each other if the denominator isn't pinned down first, so this has to be settled before the eval code — not the benchmark scenarios themselves — makes the choice by default.
+**Decision:** The single "human-escalation accuracy" metric proposed in decision 5 is replaced by two separate metrics:
+- **Escalation recall** — ambiguous scenarios correctly escalated ÷ total ambiguous scenarios. Threshold ≥ 90%.
+- **False-escalation rate** — non-ambiguous scenarios wrongly escalated. Reported as a raw count, not a percentage: ≤ 2 out of 15 non-ambiguous scenarios.
+
+**What counts as "escalated":** the system must give one clear, unmistakable statement that no answer is being provided and a person should review it instead. A hedged or partially-confident answer does not count as escalating under any circumstance — it is scored as a regular answer, with no partial credit in either direction.
+
+**Benchmark composition:** a starting target of 10 ambiguous / 15 non-ambiguous scenarios out of 25 total. This is a target, not a hard requirement — if genuinely ambiguous scenarios prove harder to construct convincingly than technical ones during authoring, the split may be revised. Any such revision must be logged as its own follow-up note here, not silently drifted into.
+
+**Reasoning:** The original single-denominator framing (measuring escalation accuracy only against the ambiguous subset) had a real gaming hole: a system that escalates every scenario, ambiguous or not, would score perfectly on that metric alone, since over-escalation on clear-cut scenarios is invisible to a metric that only ever looks at the ambiguous ones. Splitting into two metrics makes over-escalation visible and separately penalized instead of hiding inside a single number. The false-escalation rate is reported as a raw count rather than a percentage because 10% of a 15-scenario subset doesn't divide into a whole number, and expressing it as "10%" would overstate the precision a sample this small can support — the same problem decision 7 already names for the full benchmark's percentages, applied here to a subset even smaller than the full 20-30.
+
+**Consequence for decision 5:** the ablation gate now checks four conditions instead of three — root-cause accuracy ≥ 80%, escalation recall ≥ 90%, false-escalation count ≤ 2/15, unsupported-claim rate ≤ 10%. All four must clear for the skeptic/verifier to be cut from the shipped architecture; failing any one of the four means the skeptic ships. Decision 5's own three-condition text is left as written, not rewritten, since it records the thresholds as originally proposed — this decision is what supersedes the second one.
 
 ## 7. Benchmark sample size and reporting
 
