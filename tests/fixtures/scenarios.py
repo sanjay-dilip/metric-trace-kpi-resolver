@@ -452,6 +452,122 @@ CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B = Scenario(
     seed_table="case_11_referential_integrity_source_b",
 )
 
+# Case 12: COLLISION PROOF FIXTURE (Build 3, Day 1, Part 2) -- proves overlap
+# #7 from Build 3 Day 1 Part 1's inventory: sql_diff's join_type category and
+# check_referential_integrity fire on the SAME underlying fact. Deliberately
+# mirrors Case 1's own shape (LEFT vs INNER JOIN on the identical join
+# condition; a real orphan row -- customer_id=99 -- with no matching
+# customers row) but on wholly new, standalone seed data -- Case 1's own
+# fixture, seed data, and dispatch entry are untouched by this session.
+# Both source_a.sql and source_b.sql run against the SAME underlying data
+# (identical CASE_12_CUSTOMERS/CASE_12_ORDERS on both seed files) -- the
+# orphan row survives source_a's LEFT JOIN and is dropped by source_b's
+# INNER JOIN, which is exactly what makes it a real join_type finding AND a
+# real referential-integrity orphan simultaneously. reported_value_a
+# (600.0), reported_value_b (300.0), and known_gap (300.0) are real
+# execution figures (scripts/build_seed_data.py), per decision 13's
+# calibration convention.
+#
+# EXCLUSION REASON, stated explicitly per this session's own requirement:
+# collision proof fixture, no suppression rule exists yet -- including it
+# in SCENARIOS would let two tools silently double-count the same fact in
+# any pipeline run. This is not a temporary exclusion pending a trigger
+# condition (unlike Cases 8-11 before their wiring) -- it stays excluded
+# until a suppression/dispatch design is chosen in chat and implemented in
+# a future session. NOT added to SCENARIOS.
+CASE_12_JOIN_ORPHAN_COLLISION = Scenario(
+    scenario_id="case_12_join_orphan_collision",
+    description=(
+        "Collision proof fixture: a real orphan FK row (customer_id=99) "
+        "simultaneously produces sql_diff's join_type finding (LEFT keeps "
+        "it, INNER drops it) and a check_referential_integrity orphan "
+        "finding -- proves overlap #7 from Build 3 Day 1 Part 1's "
+        "inventory on freshly built data, not by code inspection."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(o.amount) AS revenue FROM orders o "
+            "LEFT JOIN customers c ON o.customer_id = c.customer_id "
+            "WHERE o.order_date >= '2024-01-01' AND o.status NOT IN ('cancelled')"
+        ),
+        declared_definition=None,
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(o.amount) AS revenue FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.customer_id "
+            "WHERE o.order_date >= '2024-01-01' AND o.status NOT IN ('cancelled')"
+        ),
+        declared_definition=None,
+    ),
+    reported_value_a=600.0,
+    reported_value_b=300.0,
+    known_gap=600.0 - 300.0,
+    seed_table="case_12_join_orphan_collision",
+)
+
+# Case 13: COLLISION PROOF FIXTURE (Build 3, Day 1, Part 2) -- proves overlap
+# #4 from Build 3 Day 1 Part 1's inventory: sql_diff's filter category and
+# definition_diff's excluded_statuses field fire on the SAME underlying
+# fact. Neither side declares a metric definition, forcing the inferred
+# path (src/definition_diff.py's _infer_excluded_statuses), not
+# declared-vs-declared, which is a different code path entirely.
+#
+# DEVIATION FROM A LITERAL "both sides filter status, different values"
+# CONSTRUCTION, stated explicitly: that shape was tried first and verified,
+# by execution, NOT to produce a sql_diff finding at all --
+# src/sql_diff.py's _diff_filters is presence-only (flags a column filtered
+# on one side and absent on the other; it does not compare the VALUES
+# inside a filter both sides share), so two different NOT IN sets on a
+# column both sides filter never registers as a `filter` category
+# difference. The shape that actually exercises this overlap is: source_a
+# filters status via a real NOT IN exclusion ("status NOT IN ('churned')"),
+# source_b has NO status filter whatsoever (not a differently-valued one).
+# This is still a genuine NOT IN exclusion shape on the filtering side --
+# not an inclusion filter substituted for convenience, which Part 1's
+# inventory already confirmed _infer_excluded_statuses does not recognize
+# at all. Both source_a.sql/source_b.sql run against the SAME underlying
+# data (identical CASE_13_ORDERS on both seed files). reported_value_a
+# (300.0), reported_value_b (450.0), and known_gap (-150.0) are real
+# execution figures, per decision 13's calibration convention.
+#
+# EXCLUSION REASON, stated explicitly, same as Case 12: collision proof
+# fixture, no suppression rule exists yet -- including it in SCENARIOS
+# would let two tools silently double-count the same fact in any pipeline
+# run. No data-quality check or dispatch entry is involved for this
+# fixture at all. NOT added to SCENARIOS.
+CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION = Scenario(
+    scenario_id="case_13_filter_excluded_statuses_collision",
+    description=(
+        "Collision proof fixture: source_a filters status via a real "
+        "NOT IN exclusion, source_b has no status filter at all -- "
+        "simultaneously produces sql_diff's filter finding (column "
+        "presence differs) and definition_diff's excluded_statuses "
+        "finding (inferred sets differ) -- proves overlap #4 from Build "
+        "3 Day 1 Part 1's inventory on freshly built data, not by code "
+        "inspection."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE order_date >= '2024-01-01' AND status NOT IN ('churned')"
+        ),
+        declared_definition=None,
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01'",
+        declared_definition=None,
+    ),
+    reported_value_a=300.0,
+    reported_value_b=450.0,
+    known_gap=300.0 - 450.0,
+    seed_table="case_13_filter_excluded_statuses_collision",
+)
+
 SCENARIOS = [
     CASE_1_JOIN_TYPE,
     CASE_2_MULTI_CAUSE,

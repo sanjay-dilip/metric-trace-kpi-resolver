@@ -243,11 +243,29 @@ def _case_11_referential_integrity_source_b(
     )
 
 
+def _case_12_join_orphan_collision(
+    scenario: Scenario, seed_db_path_a: str, seed_db_path_b: str
+) -> DataQualityIssue | None:
+    """Build 3, Day 1, Part 2: a new dispatch entry for a new, standalone
+    collision-proof fixture (Case 12) -- not a change to any existing
+    entry. Case 12 is deliberately excluded from SCENARIOS (see its own
+    Scenario docstring, tests/fixtures/scenarios.py) precisely because no
+    suppression rule exists yet to reconcile this dispatch's finding
+    against sql_diff's join_type finding on the same data; this entry
+    exists so the collision can be demonstrated via direct function calls,
+    not so this fixture participates in any pipeline run."""
+    return check_referential_integrity(
+        seed_db_path_a, seed_db_path_a, "orders", "customers", "customer_id", "customer_id",
+        scenario.source_a.sql, "a",
+    )
+
+
 _DATA_QUALITY_DISPATCH: dict[str, Callable[[Scenario, str, str], DataQualityIssue | None]] = {
     "case_08_stale_extract": _case_08_stale_extract,
     "case_09_missing_partition": _case_09_missing_partition,
     "case_10_referential_integrity": _case_10_referential_integrity,
     "case_11_referential_integrity_source_b": _case_11_referential_integrity_source_b,
+    "case_12_join_orphan_collision": _case_12_join_orphan_collision,
 }
 """Build 2, Day 5 dispatch point (decision locked in chat, Option B): only
 ONE data-quality check is ever invoked per scenario, chosen by
