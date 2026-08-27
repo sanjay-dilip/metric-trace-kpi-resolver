@@ -81,6 +81,27 @@ def test_excluded_statuses_correction_matches_hand_verified_case_3_y_only():
     assert _execute_scalar(db, mechanical) == _execute_scalar(db, hand_written_y_only) == 250.0
 
 
+def test_excluded_statuses_correction_with_empty_target_removes_filter_entirely():
+    """Build 3, Day 1, Part 5: an empty target_statuses list ("corrected
+    toward zero exclusions", src.definition_diff's '(none)' inference
+    result) must remove the status-exclusion predicate entirely -- not
+    rewrite it to a vacuous NOT IN (), the locked design decision this
+    session implements. Covers both AND-chain shapes: a status predicate
+    AND-ed with another condition (Case 13's own source_a.sql shape)
+    collapses to just the remaining condition; a status predicate that is
+    the query's ONLY WHERE condition drops the WHERE clause altogether."""
+    multi_condition_sql = (
+        "SELECT SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01' AND status NOT IN ('churned')"
+    )
+    corrected = apply_excluded_statuses_correction(multi_condition_sql, [])
+    assert "status" not in corrected.lower()
+    assert "order_date" in corrected
+
+    single_condition_sql = "SELECT SUM(amount) AS revenue FROM orders WHERE status NOT IN ('churned')"
+    corrected_single = apply_excluded_statuses_correction(single_condition_sql, [])
+    assert "where" not in corrected_single.lower()
+
+
 def test_join_type_correction_matches_hand_verified_case_1_source_b():
     """Case 1's single_cause_attribution test compares source A's LEFT JOIN
     against source B's INNER JOIN directly; mechanically correcting A's join
