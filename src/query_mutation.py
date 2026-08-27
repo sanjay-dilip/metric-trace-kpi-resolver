@@ -122,18 +122,45 @@ def _is_recognized_exclusion_shape(node: exp.Expression) -> bool:
     return isinstance(node, exp.NEQ)
 
 
+def _remove_predicate(where: exp.Where, leaf: exp.Expression) -> None:
+    """Remove `leaf` from `where`'s AND-chain entirely -- collapsing to
+    whichever sibling condition remains if `leaf` was AND-ed with others,
+    or dropping the WHERE clause altogether if `leaf` was the only
+    condition. Used when a correction target names zero statuses to
+    exclude, meaning "no exclusion filter on this column at all" (Build 3,
+    Day 1, Part 5, locked design decision) -- NOT a vacuous `NOT IN ()`,
+    which is a different, not-requested reading. Both tree shapes verified
+    directly before writing this: a multi-predicate AND-chain has `leaf`
+    as a direct child of an `exp.And` node, so replacing that `And` node
+    with `leaf`'s sibling correctly collapses to the remaining
+    condition(s); a single-predicate WHERE has `leaf` AS `where.this`
+    directly (parent is the `Where` node itself, not an `And`), so
+    `where.pop()` is what removes it instead."""
+    parent = leaf.parent
+    if isinstance(parent, exp.And):
+        sibling = parent.expression if parent.this is leaf else parent.this
+        parent.replace(sibling)
+    else:
+        where.pop()
+
+
 def apply_excluded_statuses_correction(sql: str, target_statuses: list[str]) -> str:
-    """Rewrite the status-exclusion filter to exclude exactly `target_statuses`.
+    """Rewrite the status-exclusion filter to exclude exactly `target_statuses`,
+    or remove the exclusion filter entirely when `target_statuses` is empty
+    (Build 3, Day 1, Part 5, locked design decision: "corrected toward zero
+    exclusions" means no exclusion clause on that column at all, not an
+    empty `NOT IN ()`).
 
     Requires exactly one WHERE predicate that references a bare 'status'
     column, in a recognized exclusion shape (NOT IN or !=) -- same
-    recognized shapes as src.definition_diff's inference. Zero or multiple
-    status predicates, or an unrecognized shape (e.g. status = 'active'),
-    raise rather than guessing which filter to rewrite or how.
+    recognized shapes as src.definition_diff's inference -- REGARDLESS of
+    whether `target_statuses` is empty or populated: removing a filter
+    mechanically still requires being sure exactly one recognized
+    status-exclusion predicate exists to remove, the same certainty
+    rewriting one to a new value requires. Zero or multiple status
+    predicates, or an unrecognized shape (e.g. status = 'active'), raise
+    rather than guessing which filter to touch or how, in either case.
     """
-    if not target_statuses:
-        raise ValueError("apply_excluded_statuses_correction requires at least one target status to exclude.")
-
     tree = sqlglot.parse_one(sql)
     where = tree.find(exp.Where)
     if where is None:
@@ -152,6 +179,10 @@ def apply_excluded_statuses_correction(sql: str, target_statuses: list[str]) -> 
             f"unrecognized shape ('{leaf.sql()}'); only NOT IN / != exclusion "
             "filters can be mechanically rewritten."
         )
+
+    if not target_statuses:
+        _remove_predicate(where, leaf)
+        return tree.sql()
 
     column_node = leaf.find(exp.Column)
     if column_node is None:
@@ -238,12 +269,18 @@ def apply_join_type_correction(sql: str, target_join: str) -> str:
 
 def _parse_excluded_statuses_value(value: str) -> list[str]:
     """Parse a DefinitionDifference/SelfConsistencyIssue excluded_statuses
-    value (comma-joined, e.g. 'churned, trial', or '(none)') back into a
-    list of status strings."""
-    statuses = [status.strip() for status in value.split(",") if status.strip() and status.strip() != "(none)"]
-    if not statuses:
-        raise ValueError(f"excluded_statuses target value '{value}' does not name any statuses to exclude.")
-    return statuses
+    value (comma-joined, e.g. 'churned, trial') back into a list of status
+    strings. `'(none)'` (src.definition_diff's own placeholder for "zero
+    statuses excluded") parses to an EMPTY list, not an error (Build 3,
+    Day 1, Part 5, locked design decision) -- apply_excluded_statuses_correction
+    treats an empty target as "remove the exclusion filter entirely," the
+    correct reading of "corrected toward zero exclusions" (not a vacuous
+    `NOT IN ()`). Before this fix, an empty result here raised
+    unconditionally; that raise is now apply_excluded_statuses_correction's
+    job alone, for the cases that are genuinely still ambiguous (zero or
+    multiple status predicates, or an unrecognized predicate shape) -- not
+    for a well-formed, deliberately empty target."""
+    return [status.strip() for status in value.split(",") if status.strip() and status.strip() != "(none)"]
 
 
 def _extract_join_target_from_snippet(snippet: str) -> str:
