@@ -62,6 +62,8 @@ every other Build 1/2 deterministic tool.
 from typing import Literal
 
 import duckdb
+import sqlglot
+from sqlglot import exp
 
 from src.reconciliation import freshness_attribution, single_cause_attribution
 from src.schema import DataQualityIssue
@@ -268,6 +270,30 @@ def _orphan_count(
         con.close()
 
 
+def _fact_table_qualifier(query_sql: str, fact_table: str) -> str:
+    """Build 3, Day 1, Part 3 bug fix: find how `query_sql` actually refers
+    to `fact_table` in its own FROM/JOIN clauses -- its alias if one is
+    used (e.g. "orders o" -> "o"), or the bare table name if it isn't
+    aliased at all. Needed because check_referential_integrity's
+    dollar-impact step appends an `AND {fk_column} IN (...)` clause onto
+    query_sql, and a BARE fk_column reference is ambiguous whenever
+    query_sql already joins fact_table to dimension_table on that same
+    column (both tables then have a column of that name in scope) --
+    confirmed as a real crash (Build 3, Day 1, Part 2, Case 12:
+    duckdb.BinderException, "Ambiguous reference to column name
+    'customer_id'"). Qualifying with the bare fact_table name alone is not
+    sufficient once query_sql aliases it (DuckDB rejects a query's own
+    real table name once an alias is in play: "Referenced table 'orders'
+    not found! Candidate tables: 'o'", confirmed directly) -- this
+    function resolves the correct qualifier either way, rather than
+    guessing one shape works for both."""
+    tree = sqlglot.parse_one(query_sql)
+    for table in tree.find_all(exp.Table):
+        if table.name.lower() == fact_table.lower():
+            return table.alias or table.name
+    return fact_table
+
+
 def check_referential_integrity(
     fact_db_path: str,
     dimension_db_path: str,
@@ -300,13 +326,27 @@ def check_referential_integrity(
     corrected-query pattern uses, not freshness_attribution's two-database
     shape) compares `query_sql` (baseline, as-written) against a
     "FK-filtered" corrected variant -- `query_sql` with an added
-    `AND {fk_column} IN (SELECT {dimension_key_column} FROM {dimension_table})`
-    clause, run against `fact_db_path`. This string-append approach
-    requires `query_sql` to already contain a WHERE clause, true of every
-    fixture query in this project (Case 1/4/6/7/8/9/10 all do) -- a
-    deliberate, documented scope narrowing to this project's own committed
-    query shapes, the same kind of pragmatic limit src/query_mutation.py's
-    rule-based mutators already accept, not a general SQL-rewriting engine.
+    `AND {qualifier}.{fk_column} IN (SELECT {dimension_key_column} FROM {dimension_table})`
+    clause, run against `fact_db_path`, where `{qualifier}` is resolved by
+    `_fact_table_qualifier` (this module, Build 3 Day 1 Part 3 bug fix) --
+    `fact_table`'s alias if `query_sql` uses one, or `fact_table` itself if
+    it doesn't. A BARE, unqualified `fk_column` reference was the original
+    (Build 2, Day 4) approach and worked for every fixture that existed
+    then (Cases 10/11, neither of which joins `fact_table` to
+    `dimension_table`), but crashes with a DuckDB BinderException
+    ("ambiguous reference") the moment `query_sql` joins the two on that
+    exact column, which is exactly what Case 12 (Build 3, Day 1, Part 2)
+    does -- confirmed as a real, previously-undiscovered gap, not a
+    hypothetical one, and fixed here without changing the surrounding
+    query-construction shape (still a single string-append, just a
+    correctly-qualified one).
+
+    This string-append approach still requires `query_sql` to already
+    contain a WHERE clause, true of every fixture query in this project
+    (Case 1/4/6/7/8/9/10/12 all do) -- a deliberate, documented scope
+    narrowing to this project's own committed query shapes, the same kind
+    of pragmatic limit src/query_mutation.py's rule-based mutators already
+    accept, not a general SQL-rewriting engine.
     It also assumes `dimension_table` is queryable by that bare name in
     `fact_db_path` (true whenever fact and dimension are co-located in one
     file, Case 10's shape) -- the dollar-impact computation, unlike
@@ -341,8 +381,9 @@ def check_referential_integrity(
     if orphan_count == 0:
         return None
 
+    qualifier = _fact_table_qualifier(query_sql, fact_table)
     corrected_sql = (
-        f"{query_sql} AND {fk_column} IN (SELECT {dimension_key_column} FROM {dimension_table})"
+        f"{query_sql} AND {qualifier}.{fk_column} IN (SELECT {dimension_key_column} FROM {dimension_table})"
     )
     raw_delta = single_cause_attribution(fact_db_path, query_sql, corrected_sql)
     dollar_impact = -raw_delta if source == "a" else raw_delta
