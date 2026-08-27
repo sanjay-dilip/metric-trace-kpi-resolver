@@ -263,6 +263,55 @@ CASE_11_ORDERS_B = [
     (4, 1, 50.0, "cancelled", "2023-12-01"), # excluded by status regardless
 ]
 
+# --- Case 12: join_type/referential_integrity COLLISION PROOF FIXTURE
+# (Build 3, Day 1, Part 2). NOT a new cause type -- deliberately mirrors
+# Case 1's own shape (LEFT vs INNER JOIN on the same condition, with a real
+# orphan row that is what makes the join kind matter) to prove, on freshly
+# built data, that the SAME orphan row that produces sql_diff's join_type
+# finding ALSO makes check_referential_integrity fire -- exactly the
+# collision flagged as overlap #7 in Build 3 Day 1 Part 1's inventory, and
+# already suspected concretely of Case 1 itself (CONTEXT.md Open Items).
+# Case 1's own data/dispatch entry is untouched by this fixture -- this is
+# a wholly separate, standalone proof, not a retrofit of Case 1. Both
+# source_a.sql and source_b.sql run against the SAME underlying data (one
+# seed file per side, both holding identical CASE_12_CUSTOMERS/CASE_12_ORDERS),
+# matching Case 1's own "the difference comes entirely from the SQL text"
+# convention -- LEFT JOIN (source_a) keeps the orphan row, INNER JOIN
+# (source_b) drops it. ---
+CASE_12_CUSTOMERS = [(1, "active", "2024-01-01"), (2, "active", "2024-01-01")]
+CASE_12_ORDERS = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 2, 200.0, "active", "2024-03-01"),
+    (3, 99, 300.0, "active", "2024-01-15"),  # orphan: customer_id 99 does not exist --
+                                              # also what makes LEFT vs INNER JOIN differ
+    (4, 1, 50.0, "cancelled", "2023-12-01"), # excluded by status regardless
+]
+
+# --- Case 13: sql_diff-filter/definition_diff-excluded_statuses COLLISION
+# PROOF FIXTURE (Build 3, Day 1, Part 2) -- proves overlap #4 from Part 1's
+# inventory. Neither side declares a metric definition (forces the
+# inferred path, src/definition_diff.py's _infer_excluded_statuses, not
+# the declared-vs-declared path, which is a different code path entirely).
+# source_a's SQL filters status via a real NOT IN exclusion shape
+# ("status NOT IN ('churned')") -- required, not an inclusion filter
+# (status = 'active'), since Part 1's inventory confirmed an inclusion
+# filter is not recognized by _infer_excluded_statuses at all and would
+# prove nothing. source_b's SQL has NO status filter whatsoever -- this is
+# a deliberate deviation from a literal "both sides filter, different
+# values" construction (which was tried first, verified NOT to produce a
+# sql_diff finding at all, since _diff_filters is presence-only -- see the
+# fixture's own Scenario docstring for the executed proof). Both
+# source_a.sql/source_b.sql run against the SAME underlying data (one seed
+# file per side, both holding identical CASE_13_ORDERS), matching Case
+# 1/12's own "difference comes entirely from the SQL text" convention. ---
+CASE_13_ORDERS = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 1, 200.0, "active", "2024-03-01"),
+    (3, 1, 150.0, "churned", "2024-01-15"), # excluded by source_a's status filter;
+                                             # included by source_b (no status filter at all)
+    (4, 1, 50.0, "active", "2023-12-01"),   # excluded by date on both sides regardless
+]
+
 # --- Case 7: precedence-rule conflict. order_id 2 (cancelled) is wrongly
 # INCLUDED by A's as-written SQL (which only excludes 'refunded', not
 # 'cancelled' as A declares) -- A's SQL under-excludes relative to its own
@@ -350,6 +399,17 @@ def build_all() -> None:
         (_build_customers_table, CASE_11_CUSTOMERS),
         (_build_orders_table, CASE_11_ORDERS_B),
     )
+
+    for side in ("a", "b"):
+        _seed_file(
+            "case_12_join_orphan_collision", side,
+            (_build_customers_table, CASE_12_CUSTOMERS),
+            (_build_orders_table, CASE_12_ORDERS),
+        )
+        _seed_file(
+            "case_13_filter_excluded_statuses_collision", side,
+            (_build_orders_table, CASE_13_ORDERS),
+        )
 
 
 if __name__ == "__main__":
