@@ -9,6 +9,12 @@ from src.scenario import DeclaredDefinition, DashboardSource, Scenario
 # Case 1: Clean single-cause, both declared identically, join-type difference.
 # A's LEFT JOIN keeps orders with no matching customer row; B's INNER JOIN drops
 # them. Same declared definition on both sides, so the only cause is structural.
+# Deliberately given no _DATA_QUALITY_DISPATCH entry (reconciliation_assembly.py):
+# this fixture's own orphan FK row (order_id=3 -> customer_id=99, absent from
+# customers) would make check_referential_integrity fire with a dollar figure
+# identical to this scenario's own join_type finding, reproducing decision 17's
+# legibility risk (docs/decisions.md) on a live benchmark fixture rather than
+# only on Case 12's dedicated collision-proof fixture. Leave undispatched.
 CASE_1_JOIN_TYPE = Scenario(
     scenario_id="case_01_join_type",
     description="Clean single-cause: identical declared definitions, LEFT vs INNER join drops unmatched orders on B's side.",
