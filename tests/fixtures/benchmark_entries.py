@@ -12,6 +12,18 @@ from typing import Literal
 from pydantic import BaseModel
 
 from src.scenario import Scenario
+from tests.fixtures.scenarios import (
+    CASE_1_JOIN_TYPE,
+    CASE_3_HYBRID_FALLBACK,
+    CASE_4_GOVERNANCE_DRIFT,
+    CASE_5_UNEXPLAINED_RESIDUAL,
+    CASE_6_NEGATIVE_CONTROL,
+    CASE_7_PRECEDENCE_CONFLICT,
+    CASE_8_STALE_EXTRACT,
+    CASE_9_MISSING_PARTITION,
+    CASE_10_REFERENTIAL_INTEGRITY,
+    CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
+)
 
 
 class BenchmarkEntry(BaseModel):
@@ -41,3 +53,81 @@ class BenchmarkEntry(BaseModel):
     above -- e.g. a correct answer split across multiple reconciliation line
     items, or a correct answer that only appears once suppression has moved
     it into a different evidence field. None when no caveat applies."""
+
+
+BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
+    BenchmarkEntry(
+        scenario=CASE_1_JOIN_TYPE,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+    ),
+    BenchmarkEntry(
+        scenario=CASE_3_HYBRID_FALLBACK,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+        notes=(
+            "Correct answer is split across two reconciliation line items "
+            "(date_field -400.0, excluded_statuses +500.0) that only sum to "
+            "known_gap together, and both are medium-confidence inferred "
+            "findings, not declared ones -- full credit must not require "
+            "declared/high-confidence provenance."
+        ),
+    ),
+    BenchmarkEntry(
+        scenario=CASE_4_GOVERNANCE_DRIFT,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+    ),
+    BenchmarkEntry(
+        scenario=CASE_5_UNEXPLAINED_RESIDUAL,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+        notes=(
+            "Empty reconciliation is the correct answer here, unlike Case "
+            "6: this scenario has a nonzero known_gap with no findable "
+            "cause, not a zero known_gap with nothing to investigate."
+        ),
+    ),
+    BenchmarkEntry(
+        scenario=CASE_6_NEGATIVE_CONTROL,
+        ground_truth_check_field="none",
+        is_ambiguous=False,
+    ),
+    BenchmarkEntry(
+        scenario=CASE_7_PRECEDENCE_CONFLICT,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+        notes=(
+            "The real cross-source excluded_statuses conflict is "
+            "suppressed from definition_differences and only appears "
+            "folded into self_consistency_issues[0].dollar_impact -- "
+            "checking definition_differences alone gives a false negative."
+        ),
+    ),
+    BenchmarkEntry(
+        scenario=CASE_8_STALE_EXTRACT,
+        ground_truth_check_field="data_quality_issues",
+        is_ambiguous=False,
+    ),
+    BenchmarkEntry(
+        scenario=CASE_9_MISSING_PARTITION,
+        ground_truth_check_field="data_quality_issues",
+        is_ambiguous=False,
+    ),
+    BenchmarkEntry(
+        scenario=CASE_10_REFERENTIAL_INTEGRITY,
+        ground_truth_check_field="data_quality_issues",
+        is_ambiguous=False,
+    ),
+    BenchmarkEntry(
+        scenario=CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
+        ground_truth_check_field="data_quality_issues",
+        is_ambiguous=False,
+    ),
+]
+"""Build 3, Day 2, Part 2a: ten of the eleven Case 1-11 fixtures, populated
+directly from the Build 3, Day 2, Part 1 benchmark-fitness audit (issue
+#74) -- not re-derived. Case 2 is deliberately excluded this round, pending
+its own recalibration task (the audit flagged its dollar magnitudes as
+toy-scale relative to every other fixture). No ambiguous-scenario entries
+exist yet -- the ambiguous half of the benchmark has not been authored."""
