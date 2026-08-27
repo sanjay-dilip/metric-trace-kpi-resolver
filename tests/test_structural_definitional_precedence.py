@@ -12,14 +12,36 @@ date-column swap for Case 3 (order_date vs. created_at), with no
 suppression rule reconciling them before this task. Resolved the same way
 decision 10 was, by the same function, with the same "same underlying
 fact" precision standard (_same_date_field_fact, side-matched exact
-equality, not mere category co-presence)."""
+equality, not mere category co-presence).
+
+Also covers Build 3, Day 1, Part 6's filter/excluded_statuses rule (the
+third collision this function resolves, and the first one resolved in
+the OPPOSITE direction from decisions 10/12): sql_diff's `filter` finding
+and definition_diff's `excluded_statuses` finding both trace to the same
+status column for Case 13, but only when excluded_statuses' confidence is
+exactly "low" -- here the DefinitionDifference is suppressed and the
+SQLStructuralDifference survives, since a "low"-confidence inferred value
+is a guess while filter's presence/absence is mechanically certain.
+Proven against the real Case 13 collision and two over-fire cases (a
+medium/high-confidence excluded_statuses finding on the same column; a
+filter finding on an unrelated column paired with a genuine low-confidence
+excluded_statuses finding), the same standard decisions 10/12 were each
+held to."""
+
+import pytest
 
 from src.definition_diff import diff_definitions
+from src.schema import DefinitionDifference, SQLStructuralDifference
 from src.self_consistency import assemble_structural_and_definitional_evidence
 from src.scenario import DashboardSource, DeclaredDefinition
 from src.sql_diff import diff_sql
 from src.sql_parser import parse_sql
-from tests.fixtures.scenarios import CASE_2_MULTI_CAUSE, CASE_3_HYBRID_FALLBACK, SCENARIOS
+from tests.fixtures.scenarios import (
+    CASE_2_MULTI_CAUSE,
+    CASE_3_HYBRID_FALLBACK,
+    CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION,
+    SCENARIOS,
+)
 
 
 def test_case_2_distinct_suppressed_aggregation_and_excluded_statuses_survive():
@@ -157,3 +179,87 @@ def test_no_regressions_across_all_7_fixtures():
         expected_categories = [d.category for d in sql_diffs if d.category not in suppressed_categories]
         assert [d.category for d in sql_after] == expected_categories
         assert [d.field for d in def_after] == [d.field for d in def_diffs]
+
+
+def test_case_13_filter_suppresses_low_confidence_excluded_statuses():
+    """The real collision (Build 3, Day 1, Part 6): source_a filters status
+    via a real NOT IN exclusion, source_b has no status filter at all --
+    sql_diff fires `filter`, definition_diff fires `excluded_statuses`
+    (inferred, confidence="low" on source_b's zero-status-filter side),
+    both describing the same fact. `excluded_statuses` must be removed
+    from definition_differences -- the REVERSE of decisions 10/12's own
+    direction -- and `filter` must survive untouched in sql_differences."""
+    s = CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION
+    sql_diffs = diff_sql(parse_sql(s.source_a.sql), parse_sql(s.source_b.sql))
+    def_diffs = diff_definitions(s.source_a, s.source_b)
+
+    assert {d.category for d in sql_diffs} == {"filter"}
+    assert [(d.field, d.confidence) for d in def_diffs] == [("excluded_statuses", "low")]
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(sql_diffs, def_diffs)
+
+    assert {d.category for d in sql_after} == {"filter"}
+    assert def_after == []
+
+
+@pytest.mark.parametrize("confidence", ["medium", "high"])
+def test_does_not_over_fire_on_medium_or_high_confidence_excluded_statuses(confidence):
+    """Required over-fire proof, same standard decisions 10/12 were each
+    held to: a filter finding and an excluded_statuses finding on the same
+    column, but excluded_statuses is NOT confidence="low" (a real,
+    non-empty exclusion set the inference or declaration is genuinely
+    confident about) -- suppression must not fire. This is the test that
+    proves the confidence gate actually gates, not just that Case 13's
+    happy path works. Deliberately constructed directly (not run through
+    diff_definitions) since neither declared-vs-declared nor the inferred
+    path naturally produces medium/high confidence paired with an
+    unfiltered other side the way this rule needs to be stress-tested."""
+    filter_finding = SQLStructuralDifference(
+        category="filter",
+        description="source_a filters on 'status', source_b's query has no equivalent filter on 'status'",
+        query_a_snippet="NOT status IN ('churned')",
+        query_b_snippet="(no filter on this column)",
+    )
+    excluded_statuses_finding = DefinitionDifference(
+        field="excluded_statuses",
+        source_a_value="churned",
+        source_b_value="(none)",
+        source="declared" if confidence == "high" else "inferred",
+        confidence=confidence,
+    )
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(
+        [filter_finding], [excluded_statuses_finding]
+    )
+
+    assert sql_after == [filter_finding]
+    assert def_after == [excluded_statuses_finding]
+
+
+def test_does_not_over_fire_on_unrelated_filter_column():
+    """Second required over-fire proof: a filter finding on a column OTHER
+    than status, paired with a genuine low-confidence excluded_statuses
+    finding -- suppression must not fire, proving the "same fact" check is
+    a real column-identity check, not just category co-presence (the same
+    precision standard _same_date_field_fact's own over-fire test was held
+    to for decision 12)."""
+    unrelated_filter_finding = SQLStructuralDifference(
+        category="filter",
+        description="source_a filters on 'region', source_b's query has no equivalent filter on 'region'",
+        query_a_snippet="region = 'us'",
+        query_b_snippet="(no filter on this column)",
+    )
+    excluded_statuses_finding = DefinitionDifference(
+        field="excluded_statuses",
+        source_a_value="churned",
+        source_b_value="(none)",
+        source="inferred",
+        confidence="low",
+    )
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(
+        [unrelated_filter_finding], [excluded_statuses_finding]
+    )
+
+    assert sql_after == [unrelated_filter_finding]
+    assert def_after == [excluded_statuses_finding]

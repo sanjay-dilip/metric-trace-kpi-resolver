@@ -62,6 +62,7 @@ from tests.fixtures.scenarios import (
     CASE_9_MISSING_PARTITION,
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
+    CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION,
     SCENARIOS,
 )
 
@@ -311,3 +312,23 @@ def test_raises_on_more_than_two_remaining_causes():
 
     with pytest.raises(ValueError, match="3 remaining cross-source causes"):
         assemble_investigation_evidence(scenario)
+
+
+def test_case_13_full_pipeline_now_raises_on_filter_alone_after_suppression():
+    """Build 3, Day 1, Part 6: proves the filter/excluded_statuses
+    suppression rule (assemble_structural_and_definitional_evidence,
+    src/self_consistency.py) actually reaches assemble_investigation_evidence,
+    not just the isolated unit-level proof in
+    tests/test_structural_definitional_precedence.py. Before Part 6,
+    Case 13 reached this function's Shapley-pair branch (2 remaining
+    causes: excluded_statuses + filter) and raised inside the
+    excluded_statuses correction itself (Part 4/5's finding). After Part
+    6's suppression, only `filter` survives -- exactly 1 remaining cause,
+    routed through the single-cause branch instead -- and THAT raises on
+    filter's own uncovered-category gap in construct_corrected_query,
+    the gap Part 1's inventory originally predicted. This is the correct,
+    expected stopping point (apply_filter_correction is a separate,
+    undecided design question), not a failure -- CASE_13 is still
+    deliberately NOT added to SCENARIOS."""
+    with pytest.raises(ValueError, match="No corrected-query mutation rule exists for SQLStructuralDifference category 'filter'"):
+        assemble_investigation_evidence(CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION)

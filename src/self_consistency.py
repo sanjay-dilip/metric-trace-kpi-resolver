@@ -407,24 +407,93 @@ def _same_date_field_fact(
     return structural_a == definitional_a and structural_b == definitional_b
 
 
+def _bare_filter_column_from_snippet(snippet: str) -> str | None:
+    """Extract the single bare column name referenced in a `filter`
+    SQLStructuralDifference snippet (e.g. "NOT status IN ('churned')"),
+    parsed via sqlglot rather than string matching -- same reliability
+    reasoning as _bare_date_column_from_snippet. Returns None -- not a
+    best guess -- when the snippet doesn't parse (confirmed directly:
+    sqlglot.condition() raises on `_diff_filters`'s own
+    "(no filter on this column)" placeholder text, the snippet on
+    whichever side has no filter at all) or references anything other
+    than exactly one distinct bare column."""
+    try:
+        condition = sqlglot.condition(snippet)
+    except Exception:
+        return None
+    columns = {_bare_column(column.sql()) for column in condition.find_all(exp.Column)}
+    if len(columns) != 1:
+        return None
+    return next(iter(columns))
+
+
+def _same_filter_exclusion_fact(
+    sql_difference: SQLStructuralDifference, definition_difference: DefinitionDifference
+) -> bool:
+    """"Same underlying fact" for the filter/excluded_statuses pairing
+    (Build 3, Day 1, Part 6, locked design decision): both reference the
+    same status column, AND `definition_difference`'s confidence is
+    EXACTLY "low" -- this rule is deliberately scoped to that confidence
+    level only; a "medium"/"high"-confidence excluded_statuses finding
+    colliding with a filter finding is NOT handled here (left unhandled,
+    a separate open item, not silently extrapolated to).
+
+    Unlike `_same_date_field_fact`, there is no stored "which column"
+    value to compare on the definitional side: src.definition_diff's
+    excluded_statuses inference (`_infer_excluded_statuses`) is hardcoded
+    to the bare column name "status" -- a DefinitionDifference for this
+    field never carries any other column identity. So the column check
+    here is one-sided by necessity: does `sql_difference`'s OWN snippet
+    (whichever of its two sides actually parses -- `_diff_filters` is
+    presence-only, so exactly one side has a real predicate and the other
+    is the unparseable placeholder) reference the literal column
+    "status"."""
+    if definition_difference.field != "excluded_statuses" or definition_difference.confidence != "low":
+        return False
+    referenced_column = _bare_filter_column_from_snippet(
+        sql_difference.query_a_snippet
+    ) or _bare_filter_column_from_snippet(sql_difference.query_b_snippet)
+    return referenced_column == "status"
+
+
 def assemble_structural_and_definitional_evidence(
     sql_differences: list[SQLStructuralDifference],
     definition_differences: list[DefinitionDifference],
 ) -> tuple[list[SQLStructuralDifference], list[DefinitionDifference]]:
-    """Implements decision 10 AND decision 12 (docs/decisions.md) -- the same
-    class of gap (an sql_diff structural finding and a definition_diff
-    definitional finding both tracing to one underlying fact) discovered
-    twice now, resolved by the same shape of rule each time: when a
-    `distinct`-category SQLStructuralDifference and an `aggregation`-category
-    DefinitionDifference trace to the same COUNT/COUNT DISTINCT fact (decision
-    10, per _same_count_distinct_fact), OR a `date_field`-category
-    SQLStructuralDifference and a `date_field`-category DefinitionDifference
-    trace to the same date-column swap (decision 12, per
-    _same_date_field_fact), the SQLStructuralDifference is removed from
-    sql_differences -- the mechanical/structural finding is a downstream
-    restatement of the business-meaning definitional finding, not an
-    independent cause. definition_differences is always returned unmodified;
-    only sql_differences is ever pruned here.
+    """Implements decision 10, decision 12, AND Build 3 Day 1 Part 6's
+    filter/excluded_statuses rule (docs/decisions.md) -- the same class of
+    gap (an sql_diff structural finding and a definition_diff definitional
+    finding both tracing to one underlying fact) discovered a third time
+    now, but NOT resolved the same direction on this third occurrence:
+
+      - `distinct`-category SQLStructuralDifference + `aggregation`-category
+        DefinitionDifference tracing to the same COUNT/COUNT DISTINCT fact
+        (decision 10, per _same_count_distinct_fact), OR `date_field`-category
+        SQLStructuralDifference + `date_field`-category DefinitionDifference
+        tracing to the same date-column swap (decision 12, per
+        _same_date_field_fact): the SQLStructuralDifference is removed from
+        sql_differences -- the mechanical/structural finding is a downstream
+        restatement of the business-meaning definitional finding.
+      - `filter`-category SQLStructuralDifference + `excluded_statuses`-field
+        DefinitionDifference tracing to the same status column, ONLY when
+        the DefinitionDifference's confidence is exactly "low" (Build 3 Day
+        1 Part 6, per _same_filter_exclusion_fact): the OPPOSITE direction
+        -- the DefinitionDifference is removed from definition_differences,
+        and the SQLStructuralDifference survives. A "low"-confidence
+        inferred excluded_statuses value is a guess (zero or ambiguous
+        status predicates found); filter's presence/absence is mechanically
+        certain, so here the mechanical finding is the authoritative one,
+        reversing decisions 10/12's own precedent on purpose, not by
+        oversight. Deliberately scoped to confidence="low" only -- a
+        "medium"/"high"-confidence collision on the same column is NOT
+        handled by this rule and is left as a separate, unhandled open
+        item (CONTEXT.md), not silently resolved by extrapolating this
+        rule's direction to it.
+
+    definition_differences was always returned unmodified by this function
+    before Build 3 Day 1 Part 6 -- that invariant no longer holds
+    universally; it now holds only for the decision 10/12 branches above,
+    not the new third one.
 
     Decision 12's own dollar-value note (see docs/decisions.md for the full
     reasoning, and the Case 7 comparison this was checked against): unlike
@@ -438,14 +507,19 @@ def assemble_structural_and_definitional_evidence(
     src/reconciliation_assembly.py) already fully captures the entire
     effect once the redundant structural finding is out of the way -- this
     function suppresses that redundant finding, no arithmetic beyond that
-    suppression is required or performed here.
+    suppression is required or performed here. The filter/excluded_statuses
+    rule needs no separate dollar-value note of its own: the surviving
+    SQLStructuralDifference carries no dollar_impact at all (that type has
+    no such field), and construct_corrected_query has no mutation rule for
+    `filter` yet either -- there is currently no dollar computation on
+    either side of this specific collision to double-count or lose.
 
-    When neither condition holds -- either finding of a pair absent, or a
-    structural finding present without a same-fact definitional counterpart
-    -- both lists pass through unchanged for that pairing. No new inference
-    or comparison logic beyond the two "same fact" helpers: this is
-    orchestration/filtering only, over already-computed sql_diff and
-    definition_diff output, same as assemble_definitional_evidence.
+    When none of the three conditions hold -- any finding of a pair absent,
+    or a structural finding present without a same-fact counterpart on the
+    other side -- all lists pass through unchanged for that pairing. No new
+    inference or comparison logic beyond the three "same fact" helpers:
+    this is orchestration/filtering only, over already-computed sql_diff
+    and definition_diff output, same as assemble_definitional_evidence.
     """
     has_distinct_finding = any(diff.category == "distinct" for diff in sql_differences)
     if has_distinct_finding and _same_count_distinct_fact(definition_differences):
@@ -459,5 +533,16 @@ def assemble_structural_and_definitional_evidence(
         and _same_date_field_fact(date_field_structural, date_field_definitional)
     ):
         sql_differences = [diff for diff in sql_differences if diff.category != "date_field"]
+
+    filter_structural = next((diff for diff in sql_differences if diff.category == "filter"), None)
+    excluded_statuses_definitional = next(
+        (diff for diff in definition_differences if diff.field == "excluded_statuses"), None
+    )
+    if (
+        filter_structural is not None
+        and excluded_statuses_definitional is not None
+        and _same_filter_exclusion_fact(filter_structural, excluded_statuses_definitional)
+    ):
+        definition_differences = [diff for diff in definition_differences if diff.field != "excluded_statuses"]
 
     return sql_differences, definition_differences
