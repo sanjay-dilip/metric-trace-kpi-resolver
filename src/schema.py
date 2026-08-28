@@ -149,11 +149,23 @@ class InvestigationEvidence(BaseModel):
     referential-integrity orphan finding both quantify the same $300
     correction independently) -- never sum a data_quality_issues figure
     against reconciliation's total, in a report, a reader's own math, or a
-    future explainer prompt."""
+    future explainer prompt.
+
+    unexplained_residual is float | None (Build 3, Day 2, Part 4): None is
+    reserved for the ambiguous-scenario benchmark wrapper's partial-evidence
+    path (tests/fixtures/benchmark_pipeline.py's
+    assemble_investigation_evidence_for_benchmark) -- where reconciliation
+    could not be computed at all (a genuinely ambiguous scenario's known
+    interacting causes exceed the 2-cause pairing this project's Shapley
+    engine supports), None states honestly that no residual figure was
+    computed, rather than fabricating 0.0 or any other placeholder value.
+    assemble_investigation_evidence itself (src/reconciliation_assembly.py)
+    is unmodified and never returns None here -- it always either computes
+    a real float or raises."""
 
     definition_differences: list[DefinitionDifference]
     self_consistency_issues: list[SelfConsistencyIssue]
     sql_differences: list[SQLStructuralDifference]
     data_quality_issues: list[DataQualityIssue]
     reconciliation: list[ReconciliationLineItem]
-    unexplained_residual: float
+    unexplained_residual: float | None
