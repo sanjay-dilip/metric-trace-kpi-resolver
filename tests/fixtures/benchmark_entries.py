@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from src.scenario import Scenario
 from tests.fixtures.scenarios import (
     CASE_1_JOIN_TYPE,
+    CASE_2_MULTI_CAUSE,
     CASE_3_HYBRID_FALLBACK,
     CASE_4_GOVERNANCE_DRIFT,
     CASE_5_UNEXPLAINED_RESIDUAL,
@@ -55,12 +56,22 @@ class BenchmarkEntry(BaseModel):
     it into a different evidence field. None when no caveat applies."""
 
 
-# case_02_multi_cause is intentionally excluded from this list, pending magnitude recalibration (Build 3, Day 2, Part 2b).
 BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
     BenchmarkEntry(
         scenario=CASE_1_JOIN_TYPE,
         ground_truth_check_field="reconciliation",
         is_ambiguous=False,
+    ),
+    BenchmarkEntry(
+        scenario=CASE_2_MULTI_CAUSE,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+        notes=(
+            "Correct answer is split across two reconciliation line items "
+            "(excluded_statuses +120.0, aggregation -100.0) that only sum "
+            "to known_gap (+20.0) together -- same shape as Case 3's note, "
+            "at Build 3 Day 2 Part 2b's recalibrated magnitude."
+        ),
     ),
     BenchmarkEntry(
         scenario=CASE_3_HYBRID_FALLBACK,
@@ -126,9 +137,11 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
         is_ambiguous=False,
     ),
 ]
-"""Build 3, Day 2, Part 2a: ten of the eleven Case 1-11 fixtures, populated
+"""Build 3, Day 2, Part 2a: all eleven Case 1-11 fixtures, populated
 directly from the Build 3, Day 2, Part 1 benchmark-fitness audit (issue
-#74) -- not re-derived. Case 2 is deliberately excluded this round, pending
+#74) -- not re-derived. Case 2 was originally deliberately excluded pending
 its own recalibration task (the audit flagged its dollar magnitudes as
-toy-scale relative to every other fixture). No ambiguous-scenario entries
-exist yet -- the ambiguous half of the benchmark has not been authored."""
+toy-scale relative to every other fixture); Build 3, Day 2, Part 2b
+recalibrated its seed data to a realistic magnitude and added its entry
+here. No ambiguous-scenario entries exist yet -- the ambiguous half of the
+benchmark has not been authored."""
