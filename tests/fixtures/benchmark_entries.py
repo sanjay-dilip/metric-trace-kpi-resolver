@@ -25,6 +25,7 @@ from tests.fixtures.scenarios import (
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
 )
+from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_REFUND_TIMING
 
 
 class BenchmarkEntry(BaseModel):
@@ -49,6 +50,12 @@ class BenchmarkEntry(BaseModel):
     scenario that should be escalated to a human, False for a technical/
     deterministic scenario that should be answered directly."""
 
+    expected_behavior: Literal["answer", "escalate"]
+    """What a correctly-behaving system should do with this scenario.
+    "escalate" does not mean the mechanical cause goes unfound -- it means
+    the system must not unilaterally declare either side wrong once it has
+    found it; see is_ambiguous's own docstring for the metric this drives."""
+
     notes: str | None = None
     """One-sentence scorer-relevant caveat that doesn't fit the two fields
     above -- e.g. a correct answer split across multiple reconciliation line
@@ -61,11 +68,13 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
         scenario=CASE_1_JOIN_TYPE,
         ground_truth_check_field="reconciliation",
         is_ambiguous=False,
+        expected_behavior="answer",
     ),
     BenchmarkEntry(
         scenario=CASE_2_MULTI_CAUSE,
         ground_truth_check_field="reconciliation",
         is_ambiguous=False,
+        expected_behavior="answer",
         notes=(
             "Correct answer is split across two reconciliation line items "
             "(excluded_statuses +120.0, aggregation -100.0) that only sum "
@@ -77,6 +86,7 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
         scenario=CASE_3_HYBRID_FALLBACK,
         ground_truth_check_field="reconciliation",
         is_ambiguous=False,
+        expected_behavior="answer",
         notes=(
             "Correct answer is split across two reconciliation line items "
             "(date_field -400.0, excluded_statuses +500.0) that only sum to "
@@ -89,11 +99,13 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
         scenario=CASE_4_GOVERNANCE_DRIFT,
         ground_truth_check_field="reconciliation",
         is_ambiguous=False,
+        expected_behavior="answer",
     ),
     BenchmarkEntry(
         scenario=CASE_5_UNEXPLAINED_RESIDUAL,
         ground_truth_check_field="reconciliation",
         is_ambiguous=False,
+        expected_behavior="answer",
         notes=(
             "Empty reconciliation is the correct answer here, unlike Case "
             "6: this scenario has a nonzero known_gap with no findable "
@@ -104,11 +116,13 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
         scenario=CASE_6_NEGATIVE_CONTROL,
         ground_truth_check_field="none",
         is_ambiguous=False,
+        expected_behavior="answer",
     ),
     BenchmarkEntry(
         scenario=CASE_7_PRECEDENCE_CONFLICT,
         ground_truth_check_field="reconciliation",
         is_ambiguous=False,
+        expected_behavior="answer",
         notes=(
             "The real cross-source excluded_statuses conflict is "
             "suppressed from definition_differences and only appears "
@@ -120,21 +134,39 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
         scenario=CASE_8_STALE_EXTRACT,
         ground_truth_check_field="data_quality_issues",
         is_ambiguous=False,
+        expected_behavior="answer",
     ),
     BenchmarkEntry(
         scenario=CASE_9_MISSING_PARTITION,
         ground_truth_check_field="data_quality_issues",
         is_ambiguous=False,
+        expected_behavior="answer",
     ),
     BenchmarkEntry(
         scenario=CASE_10_REFERENTIAL_INTEGRITY,
         ground_truth_check_field="data_quality_issues",
         is_ambiguous=False,
+        expected_behavior="answer",
     ),
     BenchmarkEntry(
         scenario=CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
         ground_truth_check_field="data_quality_issues",
         is_ambiguous=False,
+        expected_behavior="answer",
+    ),
+    BenchmarkEntry(
+        scenario=AMBIGUOUS_REFUND_TIMING,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=True,
+        expected_behavior="escalate",
+        notes=(
+            "A correct response finds and states the mechanical cause "
+            "(source_a declares date_field='refund_date', source_b "
+            "declares date_field='purchase_date', dollar_impact=350.0, "
+            "matching known_gap exactly) AND declines to declare either "
+            "side wrong -- both are legitimate accounting conventions. "
+            "Escalation does not mean the cause goes unfound."
+        ),
     ),
 ]
 """Build 3, Day 2, Part 2a: all eleven Case 1-11 fixtures, populated
@@ -143,5 +175,9 @@ directly from the Build 3, Day 2, Part 1 benchmark-fitness audit (issue
 its own recalibration task (the audit flagged its dollar magnitudes as
 toy-scale relative to every other fixture); Build 3, Day 2, Part 2b
 recalibrated its seed data to a realistic magnitude and added its entry
-here. No ambiguous-scenario entries exist yet -- the ambiguous half of the
-benchmark has not been authored."""
+here. Build 3, Day 2, Part 3 (proof-of-concept, issue #79) added the first
+ambiguous-scenario entry, AMBIGUOUS_REFUND_TIMING (tests/fixtures/
+ambiguous_scenarios.py) -- the second proof-of-concept scenario,
+AMBIGUOUS_REVENUE_RECOGNITION, is deliberately NOT added here yet; see
+that module's own docstring for why. The remaining 8 ambiguous scenarios
+this benchmark's decision-6 split calls for have not been authored."""

@@ -363,6 +363,63 @@ CASE_7_ORDERS = [
 ]
 
 
+# --- Ambiguous scenario proof-of-concept, Refund timing (Build 3, Day 2,
+# Part 3). Not a Build 2 data-quality/freshness cause and not a
+# declared-vs-inferred definitional cause -- both sides declare a real
+# metric definition, and the divergence is a genuine business-rule
+# question (which date governs when a refund counts), not a data gap or a
+# mistake. Both sides read the SAME refunds table; the disagreement comes
+# entirely from which declared date_field each side's SQL filters on. See
+# tests/fixtures/ambiguous_scenarios.py for the full narrative
+# justification and the Scenario definition itself. ---
+def _build_refunds_table(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
+    con.execute(
+        "CREATE OR REPLACE TABLE refunds "
+        "(refund_id INTEGER, order_id INTEGER, amount DOUBLE, "
+        "purchase_date DATE, refund_date DATE)"
+    )
+    con.executemany("INSERT INTO refunds VALUES (?, ?, ?, ?, ?)", rows)
+
+
+AMBIGUOUS_REFUND_TIMING_REFUNDS = [
+    (1, 101, 150.0, "2024-01-05", "2024-01-10"),  # both after cutoff -- counts both ways
+    (2, 102, 200.0, "2024-02-01", "2024-02-15"),  # both after cutoff -- counts both ways
+    (3, 103, 100.0, "2023-11-01", "2024-01-20"),  # purchased before cutoff, refunded after
+    (4, 104, 250.0, "2023-12-15", "2024-02-05"),  # purchased before cutoff, refunded after
+    (5, 105, 180.0, "2024-03-01", "2024-03-10"),  # both after cutoff -- counts both ways
+    (6, 106, 90.0, "2023-10-01", "2023-12-20"),   # both before cutoff -- counts neither way
+]
+
+# --- Ambiguous scenario proof-of-concept, Revenue recognition timing
+# (Build 3, Day 2, Part 3). Both sides declare a real definition; the
+# divergence is a genuine business-rule question (booking-date vs.
+# delivery-date convention) that ALSO carries a real excluded_statuses
+# difference (deferred revenue excludes anything not yet delivered) --
+# deliberately a two-cause interacting shape, distinct from the refund
+# scenario's single date_field cause. See
+# tests/fixtures/ambiguous_scenarios.py for the full narrative
+# justification. ---
+def _build_contracts_table(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
+    con.execute(
+        "CREATE OR REPLACE TABLE contracts "
+        "(contract_id INTEGER, amount DOUBLE, status VARCHAR, "
+        "booking_date DATE, delivery_date DATE)"
+    )
+    con.executemany("INSERT INTO contracts VALUES (?, ?, ?, ?, ?)", rows)
+
+
+AMBIGUOUS_REVENUE_RECOGNITION_CONTRACTS = [
+    (1, 500.0, "delivered", "2024-01-05", "2024-01-20"),        # booked & delivered after cutoff
+    (2, 750.0, "delivered", "2023-12-10", "2024-01-15"),        # booked before cutoff, delivered after
+    (3, 600.0, "pending_delivery", "2024-02-01", "2024-05-01"), # booked after cutoff, not yet delivered
+    (4, 400.0, "delivered", "2024-03-01", "2024-03-10"),        # booked & delivered after cutoff
+    (5, 300.0, "delivered", "2023-11-01", "2023-12-15"),        # both before cutoff
+    (6, 550.0, "pending_delivery", "2024-01-10", "2024-06-01"), # booked after cutoff, not yet delivered
+    (7, 450.0, "delivered", "2023-10-01", "2024-02-01"),        # booked before cutoff, delivered after
+    (8, 350.0, "delivered", "2024-04-01", "2024-04-15"),        # booked & delivered after cutoff
+]
+
+
 def _seed_file(seed_table: str, side: str, *table_builds: tuple) -> Path:
     """Create (or replace) one seed file at DATA_SAMPLE_DIR/{seed_table}_{side}.duckdb,
     running each (build_fn, rows) pair in table_builds against it in one connection."""
@@ -441,6 +498,14 @@ def build_all() -> None:
         _seed_file(
             "case_13_filter_excluded_statuses_collision", side,
             (_build_orders_table, CASE_13_ORDERS),
+        )
+        _seed_file(
+            "ambiguous_refund_timing", side,
+            (_build_refunds_table, AMBIGUOUS_REFUND_TIMING_REFUNDS),
+        )
+        _seed_file(
+            "ambiguous_revenue_recognition", side,
+            (_build_contracts_table, AMBIGUOUS_REVENUE_RECOGNITION_CONTRACTS),
         )
 
 
