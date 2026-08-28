@@ -25,6 +25,7 @@ from tests.fixtures.scenarios import (
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
 )
+from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_REFUND_TIMING
 
 
 class BenchmarkEntry(BaseModel):
@@ -153,6 +154,20 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
         is_ambiguous=False,
         expected_behavior="answer",
     ),
+    BenchmarkEntry(
+        scenario=AMBIGUOUS_REFUND_TIMING,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=True,
+        expected_behavior="escalate",
+        notes=(
+            "A correct response finds and states the mechanical cause "
+            "(source_a declares date_field='refund_date', source_b "
+            "declares date_field='purchase_date', dollar_impact=350.0, "
+            "matching known_gap exactly) AND declines to declare either "
+            "side wrong -- both are legitimate accounting conventions. "
+            "Escalation does not mean the cause goes unfound."
+        ),
+    ),
 ]
 """Build 3, Day 2, Part 2a: all eleven Case 1-11 fixtures, populated
 directly from the Build 3, Day 2, Part 1 benchmark-fitness audit (issue
@@ -160,5 +175,9 @@ directly from the Build 3, Day 2, Part 1 benchmark-fitness audit (issue
 its own recalibration task (the audit flagged its dollar magnitudes as
 toy-scale relative to every other fixture); Build 3, Day 2, Part 2b
 recalibrated its seed data to a realistic magnitude and added its entry
-here. No ambiguous-scenario entries exist yet -- the ambiguous half of the
-benchmark has not been authored."""
+here. Build 3, Day 2, Part 3 (proof-of-concept, issue #79) added the first
+ambiguous-scenario entry, AMBIGUOUS_REFUND_TIMING (tests/fixtures/
+ambiguous_scenarios.py) -- the second proof-of-concept scenario,
+AMBIGUOUS_REVENUE_RECOGNITION, is deliberately NOT added here yet; see
+that module's own docstring for why. The remaining 8 ambiguous scenarios
+this benchmark's decision-6 split calls for have not been authored."""
