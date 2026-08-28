@@ -25,7 +25,7 @@ from tests.fixtures.scenarios import (
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
 )
-from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_REFUND_TIMING
+from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_REFUND_TIMING, AMBIGUOUS_REVENUE_RECOGNITION
 
 
 class BenchmarkEntry(BaseModel):
@@ -36,13 +36,24 @@ class BenchmarkEntry(BaseModel):
     scenario: Scenario
     """The underlying fixture, unmodified."""
 
-    ground_truth_check_field: Literal["reconciliation", "data_quality_issues", "none"]
+    ground_truth_check_field: Literal[
+        "reconciliation", "data_quality_issues", "definition_differences", "none"
+    ]
     """Which InvestigationEvidence field a scorer must inspect to determine
     whether the correct cause was found. "none" means no cause exists and
     none should be reported -- distinct from "reconciliation" pointing to an
     empty list for a different reason (a real gap with no findable cause),
     and distinct from "data_quality_issues" cases where reconciliation is
-    empty but a real cause exists elsewhere in the evidence object."""
+    empty but a real cause exists elsewhere in the evidence object.
+    "definition_differences" (Build 3, Day 2, Part 4) is for scenarios run
+    through assemble_investigation_evidence_for_benchmark's ambiguous-
+    scenario partial-evidence path (tests/fixtures/benchmark_pipeline.py):
+    reconciliation is always [] there by construction (interaction beyond
+    a single pair is never Shapley-attributed), so the real, correctly-
+    found cause only appears in definition_differences (and/or
+    sql_differences/self_consistency_issues) -- pointing a scorer at
+    "reconciliation" for such a scenario would be actively wrong, not
+    just incomplete."""
 
     is_ambiguous: bool
     """Per decision 6's two-metric split (escalation recall vs.
@@ -168,6 +179,24 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
             "Escalation does not mean the cause goes unfound."
         ),
     ),
+    BenchmarkEntry(
+        scenario=AMBIGUOUS_REVENUE_RECOGNITION,
+        ground_truth_check_field="definition_differences",
+        is_ambiguous=True,
+        expected_behavior="escalate",
+        notes=(
+            "Must be run through assemble_investigation_evidence_for_benchmark "
+            "(tests/fixtures/benchmark_pipeline.py), not "
+            "assemble_investigation_evidence directly -- the latter raises "
+            "(3 remaining causes, decision 18's medium/high-confidence "
+            "filter/excluded_statuses gap). The wrapper returns "
+            "reconciliation=[] and unexplained_residual=None by design; "
+            "the correct cause is both DefinitionDifferences (date_field "
+            "'booking_date' vs 'delivery_date', excluded_statuses '(none)' "
+            "vs 'pending_delivery'), and a correct response still declines "
+            "to declare either convention wrong."
+        ),
+    ),
 ]
 """Build 3, Day 2, Part 2a: all eleven Case 1-11 fixtures, populated
 directly from the Build 3, Day 2, Part 1 benchmark-fitness audit (issue
@@ -177,7 +206,10 @@ toy-scale relative to every other fixture); Build 3, Day 2, Part 2b
 recalibrated its seed data to a realistic magnitude and added its entry
 here. Build 3, Day 2, Part 3 (proof-of-concept, issue #79) added the first
 ambiguous-scenario entry, AMBIGUOUS_REFUND_TIMING (tests/fixtures/
-ambiguous_scenarios.py) -- the second proof-of-concept scenario,
-AMBIGUOUS_REVENUE_RECOGNITION, is deliberately NOT added here yet; see
-that module's own docstring for why. The remaining 8 ambiguous scenarios
-this benchmark's decision-6 split calls for have not been authored."""
+ambiguous_scenarios.py). Build 3, Day 2, Part 4 (issue #81) unblocked and
+added the second, AMBIGUOUS_REVENUE_RECOGNITION -- ground_truth_check_field
+="definition_differences", since it must be run through
+assemble_investigation_evidence_for_benchmark (tests/fixtures/
+benchmark_pipeline.py), not assemble_investigation_evidence directly. The
+remaining 8 ambiguous scenarios this benchmark's decision-6 split calls
+for have not been authored."""
