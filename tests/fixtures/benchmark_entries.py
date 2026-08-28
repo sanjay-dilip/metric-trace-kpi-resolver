@@ -186,15 +186,20 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
         expected_behavior="escalate",
         notes=(
             "Must be run through assemble_investigation_evidence_for_benchmark "
-            "(tests/fixtures/benchmark_pipeline.py), not "
+            "(tests/fixtures/benchmark_pipeline.py), which returns a "
+            "PartialInvestigationEvidence here (decision 19), not "
             "assemble_investigation_evidence directly -- the latter raises "
             "(3 remaining causes, decision 18's medium/high-confidence "
-            "filter/excluded_statuses gap). The wrapper returns "
-            "reconciliation=[] and unexplained_residual=None by design; "
-            "the correct cause is both DefinitionDifferences (date_field "
-            "'booking_date' vs 'delivery_date', excluded_statuses '(none)' "
-            "vs 'pending_delivery'), and a correct response still declines "
-            "to declare either convention wrong."
+            "filter/excluded_statuses gap). Correct evaluation requires "
+            "checking BOTH definition_differences (date_field 'booking_date' "
+            "vs 'delivery_date', excluded_statuses '(none)' vs "
+            "'pending_delivery') AND sql_differences (one 'filter' finding, "
+            "the same status exclusion surfacing structurally too) for "
+            "completeness -- reconciliation is [] and unexplained_residual "
+            "is None by design, since escalation was triggered before "
+            "reconciliation was ever computed, not because nothing was "
+            "found. A correct response still declines to declare either "
+            "convention wrong."
         ),
     ),
 ]
