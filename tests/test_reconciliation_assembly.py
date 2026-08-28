@@ -73,8 +73,11 @@ def test_case_1_single_cause_join_type():
 def test_case_2_shapley_interacting_pair():
     """Case 2's two genuinely interacting definitional causes
     (excluded_statuses, aggregation), Shapley-attributed and negated per
-    the known_gap convention -- reproduces Day 5 Task 2's committed raw
-    figures (-2.5, +1.5) with the sign flipped (+2.5, -1.5)."""
+    the known_gap convention. Figures updated for Build 3, Day 2, Part 2b's
+    seed-data magnitude recalibration -- reproduces the engine's raw
+    figures (-120.0, +100.0, see tests/test_reconciliation.py) with the
+    sign flipped (+120.0, -100.0); the interaction still holds at the new
+    scale, confirmed by rerunning this exact test, not assumed."""
     db_a, db_b = _seed_paths(CASE_2_MULTI_CAUSE)
     sql_diffs = diff_sql(parse_sql(CASE_2_MULTI_CAUSE.source_a.sql), parse_sql(CASE_2_MULTI_CAUSE.source_b.sql))
     dd, sci = assemble_definitional_evidence_with_dollar_impacts(
@@ -101,10 +104,10 @@ def test_case_2_shapley_interacting_pair():
     aggregation_item = next(item for item in items if "aggregation" in item.cause)
 
     assert excluded_item.computed_by == "shapley_pair_attribution"
-    assert excluded_item.dollar_impact == 2.5  # -(-2.5)
+    assert excluded_item.dollar_impact == 120.0  # -(-120.0)
     assert aggregation_item.computed_by == "shapley_pair_attribution"
-    assert aggregation_item.dollar_impact == -1.5  # -(1.5)
-    assert sum(item.dollar_impact for item in items) == 1.0  # -(4 - 5), same sign as known_gap (+1.0)
+    assert aggregation_item.dollar_impact == -100.0  # -(100.0)
+    assert sum(item.dollar_impact for item in items) == 20.0  # -(280 - 300), same sign as known_gap (+20.0)
     assert CASE_2_MULTI_CAUSE.known_gap > 0
 
 

@@ -16,7 +16,12 @@ def test_case_2_shapley_attribution_matches_hand_verified_values():
     """A: COUNT(DISTINCT customer_id), excludes churned only.
     B: COUNT(customer_id), excludes churned+trial.
     Real execution (Day 4 close-out) already proved these interact --
-    this confirms the engine reproduces those exact figures."""
+    this confirms the engine reproduces those exact figures. Figures
+    updated for Build 3, Day 2, Part 2b's seed-data magnitude
+    recalibration (customer table grew from 9 hand-typed rows to 500
+    generated rows) -- the interaction still holds at the new scale,
+    confirmed by rerunning this exact test against the new seed data,
+    not assumed to transfer from the old single-digit figures."""
     db = str(DATA_SAMPLE_DIR / "case_02_multi_cause_a.duckdb")
     baseline_sql = (
         "SELECT COUNT(DISTINCT customer_id) AS active_customers FROM customers "
@@ -37,13 +42,13 @@ def test_case_2_shapley_attribution_matches_hand_verified_values():
 
     x_attr, y_attr = shapley_pair_attribution(db, baseline_sql, x_only_sql, y_only_sql, both_sql)
 
-    assert math.isclose(x_attr, -2.5, abs_tol=_TOLERANCE)
-    assert math.isclose(y_attr, 1.5, abs_tol=_TOLERANCE)
-    assert math.isclose(x_attr + y_attr, -1.0, abs_tol=_TOLERANCE)  # both(4) - baseline(5)
+    assert math.isclose(x_attr, -120.0, abs_tol=_TOLERANCE)
+    assert math.isclose(y_attr, 100.0, abs_tol=_TOLERANCE)
+    assert math.isclose(x_attr + y_attr, -20.0, abs_tol=_TOLERANCE)  # both(280) - baseline(300)
 
     # Confirm the Shapley figures genuinely differ from either naive fixed order.
-    naive_excl_first = (-2.0, 1.0)
-    naive_agg_first = (-3.0, 2.0)
+    naive_excl_first = (-100.0, 80.0)
+    naive_agg_first = (-140.0, 120.0)
     assert (x_attr, y_attr) != naive_excl_first
     assert (x_attr, y_attr) != naive_agg_first
 
