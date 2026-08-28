@@ -329,11 +329,22 @@ def test_case_13_full_pipeline_now_raises_on_filter_alone_after_suppression():
     causes: excluded_statuses + filter) and raised inside the
     excluded_statuses correction itself (Part 4/5's finding). After Part
     6's suppression, only `filter` survives -- exactly 1 remaining cause,
-    routed through the single-cause branch instead -- and THAT raises on
-    filter's own uncovered-category gap in construct_corrected_query,
-    the gap Part 1's inventory originally predicted. This is the correct,
-    expected stopping point (apply_filter_correction is a separate,
-    undecided design question), not a failure -- CASE_13 is still
+    routed through the single-cause branch instead.
+
+    Build 3, Day 2, Part 13 update: apply_filter_correction now exists,
+    but ADD-direction only (a side missing the filter gets it added from
+    the other side's real predicate) -- CASE_13's source_a is the side
+    WITH the filter (`status NOT IN ('churned')`), source_b has none, so
+    correcting source_a toward source_b's value means REMOVING an
+    existing predicate, the reverse direction apply_filter_correction
+    explicitly does not support (a separate, still-unlocked design
+    question -- does "correct toward no filter" mean dropping the
+    predicate entirely, mirroring apply_excluded_statuses_correction's
+    own zero-exclusion convention, or something else?). The raise message
+    changed from construct_corrected_query's old blanket "no rule exists
+    for category 'filter'" to apply_filter_correction's own, more
+    specific "target does not name a real filter predicate to add"
+    message -- CASE_13 still raises, still not resolved, still
     deliberately NOT added to SCENARIOS."""
-    with pytest.raises(ValueError, match="No corrected-query mutation rule exists for SQLStructuralDifference category 'filter'"):
+    with pytest.raises(ValueError, match="does not name a real filter predicate to add"):
         assemble_investigation_evidence(CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION)
