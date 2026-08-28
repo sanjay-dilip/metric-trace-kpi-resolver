@@ -12,6 +12,7 @@ from tests.fixtures.ambiguous_scenarios import (
     AMBIGUOUS_ATTRIBUTION,
     AMBIGUOUS_CURRENCY_TIMING,
     AMBIGUOUS_CUSTOMER_COUNTING,
+    AMBIGUOUS_REFUND_TIMING,
     AMBIGUOUS_REVENUE_RECOGNITION,
 )
 from tests.fixtures.benchmark_entries import BENCHMARK_ENTRIES, BenchmarkEntry
@@ -307,6 +308,84 @@ def test_ambiguous_currency_timing_benchmark_entry_is_escalate_not_answer():
     Case 1-11 entry that also reconciles cleanly."""
     entry = next(
         e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_currency_timing"
+    )
+    assert entry.is_ambiguous is True
+    assert entry.expected_behavior == "escalate"
+    assert entry.ground_truth_check_field == "reconciliation"
+
+
+# --- Build 3, Day 2, Part 10: committed coverage for AMBIGUOUS_REFUND_TIMING
+# (Build 3, Day 2, Part 3) -- the original Known-Safe Pattern 1 reference
+# case, relied upon across three subsequent sessions (Parts 4-9) purely on
+# the strength of its original chat report, never independently
+# re-confirmed in committed code until now. Live-verified before writing
+# these tests, same discipline as Parts 8 and 9 -- confirmed to match
+# Part 3's original figures exactly (880.0/530.0/350.0, one declared/high
+# date_field DefinitionDifference, clean completion with no wrapper, one
+# reconciliation line item, unexplained_residual=0.0). Mirrors the
+# AMBIGUOUS_CURRENCY_TIMING test structure above, not the Pattern-2
+# wrapper-test structure.
+
+
+def test_ambiguous_refund_timing_reported_values_match_seed_execution():
+    """Confirm the fixture's committed reported_value_a/b/known_gap
+    (880.0/530.0/350.0, as originally reported in chat during Build 3 Day 2
+    Part 3) are exactly what's on the Scenario object."""
+    assert AMBIGUOUS_REFUND_TIMING.reported_value_a == 880.0
+    assert AMBIGUOUS_REFUND_TIMING.reported_value_b == 530.0
+    assert AMBIGUOUS_REFUND_TIMING.known_gap == 350.0
+
+
+def test_ambiguous_refund_timing_findings_match_reported():
+    """Confirm diff_sql and diff_definitions, run directly against the
+    fixture's real sources, produce exactly the findings Part 3 originally
+    reported: one SQLStructuralDifference (date_field, since the two
+    sides' SQL literally filters on different date columns) and exactly
+    one DefinitionDifference (date_field, declared/high-confidence) -- no
+    excluded_statuses or aggregation difference on either side."""
+    source_a = AMBIGUOUS_REFUND_TIMING.source_a
+    source_b = AMBIGUOUS_REFUND_TIMING.source_b
+
+    sql_differences = diff_sql(parse_sql(source_a.sql), parse_sql(source_b.sql))
+    assert [d.category for d in sql_differences] == ["date_field"]
+
+    definition_differences = diff_definitions(source_a, source_b)
+    fields = {
+        d.field: (d.source_a_value, d.source_b_value, d.source, d.confidence)
+        for d in definition_differences
+    }
+    assert fields == {
+        "date_field": ("refund_date", "purchase_date", "declared", "high"),
+    }
+
+
+def test_ambiguous_refund_timing_completes_through_normal_pipeline_single_line_item():
+    """Confirm this scenario completes through assemble_investigation_evidence
+    DIRECTLY, as Part 3 originally reported -- no ValueError, no wrapper
+    needed -- with sql_diff's colliding date_field finding suppressed
+    (decision 12, same fact as the definitional date_field difference) and
+    exactly one ReconciliationLineItem whose dollar_impact matches
+    known_gap exactly, leaving unexplained_residual at 0.0."""
+    evidence = assemble_investigation_evidence(AMBIGUOUS_REFUND_TIMING)
+
+    assert isinstance(evidence, InvestigationEvidence)
+    assert evidence.sql_differences == []
+    assert len(evidence.definition_differences) == 1
+    assert evidence.definition_differences[0].field == "date_field"
+    assert evidence.self_consistency_issues == []
+
+    assert len(evidence.reconciliation) == 1
+    assert evidence.reconciliation[0].dollar_impact == AMBIGUOUS_REFUND_TIMING.known_gap == 350.0
+    assert evidence.unexplained_residual == 0.0
+
+
+def test_ambiguous_refund_timing_benchmark_entry_is_escalate_not_answer():
+    """Even with a single, clean, fully-reconciled cause, the correct
+    system behavior is still to escalate, not silently pick a side. The
+    BenchmarkEntry must still reflect that, matching the live evidence
+    shape confirmed above."""
+    entry = next(
+        e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_refund_timing"
     )
     assert entry.is_ambiguous is True
     assert entry.expected_behavior == "escalate"
