@@ -277,3 +277,102 @@ AMBIGUOUS_ATTRIBUTION = Scenario(
     known_gap=24000.0 - 24500.0,
     seed_table="ambiguous_attribution",
 )
+
+# Cost-allocation basis (Build 3, Day 2, Part 9): BLOCKED, not authored.
+# Two legitimate conventions exist for splitting a shared cost across
+# departments -- headcount-based (reflects operational footprint) vs.
+# revenue-based (reflects ability-to-pay / contribution to the top line)
+# -- but this project's DeclaredDefinition schema (src/scenario.py) has
+# only three fields (date_field, excluded_statuses, aggregation), and
+# neither convention is representable as a single, honest difference in
+# any of them. Confirmed by live execution, not just reasoning: (1) the
+# honest construction -- identical SQL and declared definition on both
+# sides, with the allocation methodology baked into different underlying
+# "allocated_cost" data upstream (the same "identical SQL, different data"
+# technique Case 5 and every other ambiguous scenario in this file uses)
+# -- produces ZERO DefinitionDifferences and ZERO SQLStructuralDifferences;
+# the distinction is entirely invisible to this schema, not a findable
+# cause with no reconciliation, so it cannot be reported as "exactly one
+# DefinitionDifference" at all. (2) Forcing the distinction into the
+# `aggregation` field as a semantic label (e.g. "headcount_weighted" vs.
+# "revenue_weighted") does produce a single DefinitionDifference on paper,
+# but breaks two things downstream: check_self_consistency flags a
+# spurious SelfConsistencyIssue on BOTH sides (their SQL still only
+# literally implements SUM, not the semantic label, so declared !=
+# inferred), and src.query_mutation.apply_aggregation_correction raises
+# ValueError outright ("unsupported target_aggregation 'revenue_weighted';
+# supported: sum, count, count_distinct") the moment reconciliation tries
+# to correct toward it -- assemble_investigation_evidence would not
+# complete, not even reach the escalation wrapper's 3+-causes path. Per
+# this task's own locked instruction not to force a weaker or artificial
+# version, no fixture, seed data, or BenchmarkEntry was authored for this
+# scenario. Reported to the user as a blocked/reshaped scenario for a
+# chat-side decision (e.g. extending DeclaredDefinition with a fourth
+# field), not resolved unilaterally here.
+
+# Currency/exchange-rate timing (Build 3, Day 2, Part 9): two legitimate
+# conventions for which date determines which reporting period a foreign-
+# currency transaction's converted revenue belongs to. Source A's
+# treasury/cash-management team uses the transaction date itself (spot-
+# rate convention) -- the date the sale actually happened is when the
+# economic exchange occurred and the rate that was actually in effect at
+# that moment, which is what treasury needs for real-time cash-position
+# and FX-exposure tracking. Source B's consolidated-financial-reporting
+# team instead uses the period-close/month-end date (period-close-rate
+# convention) -- standard practice under many accounting frameworks for
+# normalizing every transaction in a reporting period to one comparable,
+# audited rate, since letting each transaction carry its own daily spot
+# rate would make period-over-period comparisons and consolidation across
+# subsidiaries unreliable. Neither team is wrong; real-time treasury
+# exposure and consolidated GAAP-style reporting are legitimately
+# different questions about the same underlying transactions. Deliberately
+# a SINGLE-cause scenario (date_field only, both sides declare
+# excluded_statuses=[]) -- Build 3 Day 2 Part 9's own finding is that a
+# second declared field, specifically an excluded_statuses exclusion
+# clause, is exactly what has driven every prior two-field ambiguous
+# scenario (revenue recognition, customer counting, attribution) into a
+# 3+-cause escalation-wrapper collision (decision 18's confidence="medium"/
+# "high" gap). This scenario is built to give escalation recall a genuine
+# Pattern-1 (no wrapper needed, completes through assemble_investigation_evidence
+# normally) data point beyond AMBIGUOUS_REFUND_TIMING alone.
+AMBIGUOUS_CURRENCY_TIMING = Scenario(
+    scenario_id="ambiguous_currency_timing",
+    description=(
+        "Ambiguous business-rule scenario: source_a attributes a foreign-"
+        "currency transaction to the period of the transaction date "
+        "(spot-rate/treasury convention), source_b attributes it to the "
+        "period of the period-close date (period-close-rate/consolidated-"
+        "reporting convention) -- both declared, both defensible, no "
+        "single correct answer to unilaterally pick."
+    ),
+    source_a=DashboardSource(
+        label="transaction_spot_rate_view",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM fx_transactions "
+            "WHERE transaction_date >= '2024-01-01'"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="transaction_date",
+            excluded_statuses=[],
+            aggregation="sum",
+        ),
+    ),
+    source_b=DashboardSource(
+        label="period_close_rate_view",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM fx_transactions "
+            "WHERE period_close_date >= '2024-01-01'"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="period_close_date",
+            excluded_statuses=[],
+            aggregation="sum",
+        ),
+    ),
+    # Calibrated to real execution (scripts/build_seed_data.py,
+    # AMBIGUOUS_CURRENCY_TIMING_TRANSACTIONS), per decision 13's convention.
+    reported_value_a=4100.0,
+    reported_value_b=6300.0,
+    known_gap=4100.0 - 6300.0,
+    seed_table="ambiguous_currency_timing",
+)

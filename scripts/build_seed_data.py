@@ -488,6 +488,39 @@ AMBIGUOUS_ATTRIBUTION_DEALS = [
 ]
 
 
+# --- Ambiguous scenario, Currency/exchange-rate timing (Build 3, Day 2,
+# Part 9). Both sides declare a real definition; deliberately a
+# SINGLE-cause scenario (date_field only -- no excluded_statuses clause on
+# either side), unlike the Part 7 pair -- this batch's own finding is that
+# a second declared field (specifically an excluded_statuses exclusion)
+# is exactly what has driven every prior two-field ambiguous scenario into
+# a 3+-cause escalation-wrapper collision, so this scenario is built to
+# stay clean of that shape entirely. Both sides read the SAME
+# fx_transactions table (amount already converted to reporting currency
+# upstream, per this project's schema, which has no vocabulary for "which
+# FX rate was applied") -- the disagreement comes entirely from which
+# declared date_field each side's SQL uses to decide which reporting
+# period a transaction belongs to. See tests/fixtures/ambiguous_scenarios.py
+# for the full narrative justification and the Scenario definition itself. ---
+def _build_fx_transactions_table(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
+    con.execute(
+        "CREATE OR REPLACE TABLE fx_transactions "
+        "(transaction_id INTEGER, amount DOUBLE, "
+        "transaction_date DATE, period_close_date DATE)"
+    )
+    con.executemany("INSERT INTO fx_transactions VALUES (?, ?, ?, ?)", rows)
+
+
+AMBIGUOUS_CURRENCY_TIMING_TRANSACTIONS = [
+    (1, 1200.0, "2024-01-05", "2024-01-10"),  # both after cutoff -- counts both ways
+    (2, 900.0, "2024-02-01", "2024-02-15"),   # both after cutoff -- counts both ways
+    (3, 1500.0, "2023-12-20", "2024-01-05"),  # transacted before cutoff, closed after
+    (4, 700.0, "2023-12-28", "2024-01-02"),   # transacted before cutoff, closed after
+    (5, 2000.0, "2024-03-10", "2024-03-12"),  # both after cutoff -- counts both ways
+    (6, 500.0, "2023-11-15", "2023-12-28"),   # both before cutoff -- counts neither way
+]
+
+
 def _seed_file(seed_table: str, side: str, *table_builds: tuple) -> Path:
     """Create (or replace) one seed file at DATA_SAMPLE_DIR/{seed_table}_{side}.duckdb,
     running each (build_fn, rows) pair in table_builds against it in one connection."""
@@ -582,6 +615,10 @@ def build_all() -> None:
         _seed_file(
             "ambiguous_attribution", side,
             (_build_deals_table, AMBIGUOUS_ATTRIBUTION_DEALS),
+        )
+        _seed_file(
+            "ambiguous_currency_timing", side,
+            (_build_fx_transactions_table, AMBIGUOUS_CURRENCY_TIMING_TRANSACTIONS),
         )
 
 

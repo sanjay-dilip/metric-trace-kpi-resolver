@@ -10,6 +10,7 @@ from src.sql_diff import diff_sql
 from src.sql_parser import parse_sql
 from tests.fixtures.ambiguous_scenarios import (
     AMBIGUOUS_ATTRIBUTION,
+    AMBIGUOUS_CURRENCY_TIMING,
     AMBIGUOUS_CUSTOMER_COUNTING,
     AMBIGUOUS_REVENUE_RECOGNITION,
 )
@@ -230,3 +231,83 @@ def test_ambiguous_attribution_returns_partial_evidence_via_wrapper():
     assert [d.category for d in evidence.sql_differences] == ["filter"]
     assert evidence.reconciliation == []
     assert evidence.unexplained_residual is None
+
+
+# --- Build 3, Day 2, Part 9: committed coverage for AMBIGUOUS_CURRENCY_TIMING,
+# a deliberately single-cause ambiguous scenario -- unlike the Pattern-2
+# scenarios above, this one is Known-Safe Pattern 1 (same shape as
+# AMBIGUOUS_REFUND_TIMING): it must complete through
+# assemble_investigation_evidence DIRECTLY, with no wrapper involved,
+# returning a real InvestigationEvidence with exactly one reconciliation
+# line item. Live-verified before writing these tests, same discipline as
+# Part 8.
+
+
+def test_ambiguous_currency_timing_reported_values_match_seed_execution():
+    """Confirm the fixture's committed reported_value_a/b/known_gap
+    (4100.0/6300.0/-2200.0, computed via real DuckDB execution during
+    Build 3 Day 2 Part 9's authoring) are exactly what's on the Scenario
+    object."""
+    assert AMBIGUOUS_CURRENCY_TIMING.reported_value_a == 4100.0
+    assert AMBIGUOUS_CURRENCY_TIMING.reported_value_b == 6300.0
+    assert AMBIGUOUS_CURRENCY_TIMING.known_gap == -2200.0
+
+
+def test_ambiguous_currency_timing_findings_match_reported():
+    """Confirm diff_sql and diff_definitions, run directly against the
+    fixture's real sources, produce exactly the findings this scenario was
+    designed around: one SQLStructuralDifference (date_field, since the
+    two sides' SQL literally filters on different date columns) and
+    exactly one DefinitionDifference (date_field, declared/high-confidence)
+    -- no excluded_statuses or aggregation difference on either side, by
+    deliberate single-cause design."""
+    source_a = AMBIGUOUS_CURRENCY_TIMING.source_a
+    source_b = AMBIGUOUS_CURRENCY_TIMING.source_b
+
+    sql_differences = diff_sql(parse_sql(source_a.sql), parse_sql(source_b.sql))
+    assert [d.category for d in sql_differences] == ["date_field"]
+
+    definition_differences = diff_definitions(source_a, source_b)
+    fields = {
+        d.field: (d.source_a_value, d.source_b_value, d.source, d.confidence)
+        for d in definition_differences
+    }
+    assert fields == {
+        "date_field": ("transaction_date", "period_close_date", "declared", "high"),
+    }
+
+
+def test_ambiguous_currency_timing_completes_through_normal_pipeline_single_line_item():
+    """The whole point of authoring this as single-cause: unlike
+    AMBIGUOUS_REVENUE_RECOGNITION/CUSTOMER_COUNTING/ATTRIBUTION, this
+    scenario must complete through assemble_investigation_evidence
+    DIRECTLY -- no ValueError, no wrapper needed -- with sql_diff's
+    colliding date_field finding suppressed (decision 12, same fact as the
+    definitional date_field difference) and exactly one
+    ReconciliationLineItem whose dollar_impact matches known_gap exactly,
+    leaving unexplained_residual at 0.0."""
+    evidence = assemble_investigation_evidence(AMBIGUOUS_CURRENCY_TIMING)
+
+    assert isinstance(evidence, InvestigationEvidence)
+    assert evidence.sql_differences == []
+    assert len(evidence.definition_differences) == 1
+    assert evidence.definition_differences[0].field == "date_field"
+    assert evidence.self_consistency_issues == []
+
+    assert len(evidence.reconciliation) == 1
+    assert evidence.reconciliation[0].dollar_impact == AMBIGUOUS_CURRENCY_TIMING.known_gap == -2200.0
+    assert evidence.unexplained_residual == 0.0
+
+
+def test_ambiguous_currency_timing_benchmark_entry_is_escalate_not_answer():
+    """Even with a single, clean, fully-reconciled cause, the correct
+    system behavior is still to escalate, not silently pick a side --
+    finding one clean cause does not mean the ambiguity is resolved. The
+    BenchmarkEntry must reflect that, distinctly from every non-ambiguous
+    Case 1-11 entry that also reconciles cleanly."""
+    entry = next(
+        e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_currency_timing"
+    )
+    assert entry.is_ambiguous is True
+    assert entry.expected_behavior == "escalate"
+    assert entry.ground_truth_check_field == "reconciliation"
