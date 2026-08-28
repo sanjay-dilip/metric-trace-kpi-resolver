@@ -55,7 +55,12 @@ CASE_1_JOIN_TYPE = Scenario(
 )
 
 # Case 2: Multi-cause, both declared, definitions genuinely differ (excluded_statuses)
-# AND a DISTINCT difference (A counts distinct customers, B does not).
+# AND a DISTINCT difference (A counts distinct customers, B does not). Seed
+# data recalibrated to realistic magnitude (Build 3, Day 2, Part 2b) -- SQL,
+# declared definitions, and the two-cause shape are unchanged, only the
+# underlying customer-table volume grew (scripts/build_seed_data.py,
+# _generate_case_2_customers). Original hand-typed 9-row table produced
+# single-digit reported values (5.0/4.0); this table produces hundreds.
 CASE_2_MULTI_CAUSE = Scenario(
     scenario_id="case_02_multi_cause",
     description="Multi-cause: declared excluded_statuses genuinely differ, and A uses COUNT(DISTINCT) while B does not.",
@@ -83,10 +88,12 @@ CASE_2_MULTI_CAUSE = Scenario(
             aggregation="count",
         ),
     ),
-    # Calibrated to real execution (Decision 13's resolution) -- see Case 1's comment.
-    reported_value_a=5.0,
-    reported_value_b=4.0,
-    known_gap=5.0 - 4.0,
+    # Calibrated to real execution against the recalibrated seed data (Build
+    # 3, Day 2, Part 2b), following Decision 13's own convention -- see Case
+    # 1's comment for the original convention.
+    reported_value_a=300.0,
+    reported_value_b=280.0,
+    known_gap=300.0 - 280.0,
     seed_table="case_02_multi_cause",
 )
 
