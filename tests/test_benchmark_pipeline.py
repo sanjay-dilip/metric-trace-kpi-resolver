@@ -1,12 +1,16 @@
 """Tests for tests.fixtures.benchmark_pipeline.assemble_investigation_evidence_for_benchmark
-(Build 3, Day 2, Part 4, A3-ii)."""
+(Build 3, Day 2, Part 4, A3-ii; return type corrected in Part 5)."""
 
 import pytest
 
 from src.reconciliation_assembly import assemble_investigation_evidence
+from src.schema import InvestigationEvidence
 from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_REVENUE_RECOGNITION
 from tests.fixtures.benchmark_entries import BENCHMARK_ENTRIES, BenchmarkEntry
-from tests.fixtures.benchmark_pipeline import assemble_investigation_evidence_for_benchmark
+from tests.fixtures.benchmark_pipeline import (
+    PartialInvestigationEvidence,
+    assemble_investigation_evidence_for_benchmark,
+)
 from tests.fixtures.scenarios import SCENARIOS
 
 
@@ -15,12 +19,17 @@ def test_ambiguous_revenue_recognition_returns_partial_evidence_via_wrapper():
     interacting causes exceed the 2-cause Shapley pairing this project
     supports must still surface its individually-found causes through the
     benchmark wrapper, rather than the caller getting nothing but a raised
-    exception."""
+    exception. Part 5: the returned object must be a
+    PartialInvestigationEvidence, never an InvestigationEvidence -- the
+    two are structurally independent types, not sub/superclass."""
     entry = next(e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_revenue_recognition")
     assert entry.is_ambiguous is True
     assert entry.expected_behavior == "escalate"
 
     evidence = assemble_investigation_evidence_for_benchmark(entry)
+
+    assert isinstance(evidence, PartialInvestigationEvidence)
+    assert not isinstance(evidence, InvestigationEvidence)
 
     fields = {d.field: (d.source_a_value, d.source_b_value) for d in evidence.definition_differences}
     assert fields == {
@@ -54,6 +63,18 @@ def test_technical_scenario_3plus_causes_still_raises_through_wrapper():
     # Confirm it's the exact same failure assemble_investigation_evidence itself raises.
     with pytest.raises(ValueError, match="remaining cross-source causes for scenario"):
         assemble_investigation_evidence(AMBIGUOUS_REVENUE_RECOGNITION)
+
+
+def test_normal_path_returns_real_investigation_evidence():
+    """The non-escalated path must return a real InvestigationEvidence
+    (not a PartialInvestigationEvidence) -- confirming the union return
+    type is honest in both directions, not just on the escalated path."""
+    entry = next(e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "case_01_join_type")
+    evidence = assemble_investigation_evidence_for_benchmark(entry)
+
+    assert isinstance(evidence, InvestigationEvidence)
+    assert not isinstance(evidence, PartialInvestigationEvidence)
+    assert evidence.unexplained_residual == 0.0
 
 
 def test_assemble_investigation_evidence_unaffected_for_all_11_cases():
