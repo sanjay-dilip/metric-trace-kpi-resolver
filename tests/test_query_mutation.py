@@ -40,7 +40,7 @@ def test_excluded_statuses_correction_matches_hand_verified_case_2_x_only():
     )
     mechanical = apply_excluded_statuses_correction(CASE_2_MULTI_CAUSE.source_a.sql, ["churned", "trial"])
 
-    assert _execute_scalar(db, mechanical) == _execute_scalar(db, hand_written_x_only) == 3.0
+    assert _execute_scalar(db, mechanical) == _execute_scalar(db, hand_written_x_only) == 200.0
 
 
 def test_aggregation_correction_matches_hand_verified_case_2_y_only():
@@ -53,7 +53,7 @@ def test_aggregation_correction_matches_hand_verified_case_2_y_only():
     )
     mechanical = apply_aggregation_correction(CASE_2_MULTI_CAUSE.source_a.sql, "count")
 
-    assert _execute_scalar(db, mechanical) == _execute_scalar(db, hand_written_y_only) == 7.0
+    assert _execute_scalar(db, mechanical) == _execute_scalar(db, hand_written_y_only) == 420.0
 
 
 def test_date_field_correction_matches_hand_verified_case_3_x_only():
@@ -125,7 +125,7 @@ def test_construct_corrected_query_dispatches_real_definition_differences():
         d.field: _execute_scalar(db, construct_corrected_query(CASE_2_MULTI_CAUSE.source_a.sql, d))
         for d in differences
     }
-    assert results == {"excluded_statuses": 3.0, "aggregation": 7.0}
+    assert results == {"excluded_statuses": 200.0, "aggregation": 420.0}
 
 
 def test_construct_corrected_query_fails_loudly_on_unsupported_category():

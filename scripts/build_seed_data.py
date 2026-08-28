@@ -130,19 +130,51 @@ CASE_1_ORDERS = [
     (5, 1, 50.0, "active", "2023-12-01"),     # excluded by date, both sides
 ]
 
-# --- Case 2: reused verbatim from the earlier diagnostic session's
-# synthetic customers table (dedup / status-boundary overlap design). ---
-CASE_2_CUSTOMERS = [
-    (1, "active", "2024-02-01"),
-    (1, "active", "2024-02-01"),   # duplicate row, non-trial
-    (2, "trial", "2024-03-01"),
-    (2, "trial", "2024-03-01"),    # duplicate row, trial -- the overlap case
-    (3, "active", "2024-01-15"),
-    (4, "churned", "2024-01-10"),
-    (5, "trial", "2024-04-01"),
-    (6, "active", "2023-12-01"),   # before cutoff
-    (7, "active", "2024-05-01"),
-]
+# --- Case 2 (Build 3, Day 2, Part 2b recalibration): magnitude rescale of
+# the original hand-typed 9-row table, per decision 13's own convention
+# applied here to realistic scale rather than a stale/complete mismatch.
+# SQL, declared definitions, and which two categories interact
+# (excluded_statuses, aggregation) are unchanged -- only seed-data volume
+# grows. Same qualitative shape as the original table, at benchmark scale:
+# a block of "active" customers (some duplicated, to preserve the original
+# DISTINCT-vs-COUNT dedup case), a block of "trial" customers (some
+# duplicated, preserving the original's trial-duplicate overlap case,
+# though trial rows never reach either side's aggregation since A dedupes
+# and B excludes trial outright), a block of "churned" customers (excluded
+# by both sides' declared definitions), and a block of pre-cutoff customers
+# (excluded by the date filter regardless of status).
+def _generate_case_2_customers() -> list[tuple[int, str, str]]:
+    rows: list[tuple[int, str, str]] = []
+    next_id = 1
+
+    active_ids: list[int] = []
+    for _ in range(200):
+        rows.append((next_id, "active", "2024-02-01"))
+        active_ids.append(next_id)
+        next_id += 1
+    for dup_id in active_ids[:80]:   # 80 duplicated active rows
+        rows.append((dup_id, "active", "2024-02-01"))
+
+    trial_ids: list[int] = []
+    for _ in range(100):
+        rows.append((next_id, "trial", "2024-03-01"))
+        trial_ids.append(next_id)
+        next_id += 1
+    for dup_id in trial_ids[:40]:   # 40 duplicated trial rows
+        rows.append((dup_id, "trial", "2024-03-01"))
+
+    for _ in range(50):
+        rows.append((next_id, "churned", "2024-01-10"))
+        next_id += 1
+
+    for _ in range(30):
+        rows.append((next_id, "active", "2023-12-01"))   # before cutoff
+        next_id += 1
+
+    return rows
+
+
+CASE_2_CUSTOMERS = _generate_case_2_customers()
 
 # --- Case 3: reused verbatim from the earlier diagnostic session's
 # synthetic orders table (mis-dated / status-boundary overlap design). ---

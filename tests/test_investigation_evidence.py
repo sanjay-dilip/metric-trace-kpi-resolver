@@ -121,14 +121,19 @@ def test_case_1_fully_reconciles_after_recalibration():
 
 
 def test_case_2_fully_reconciles_after_recalibration():
-    """Same recalibration result as Case 1, for the Shapley-pair case:
-    the two interacting causes sum to +1.0, matching the recalibrated
-    known_gap (+1.0, was a mismatched-scale +1250.0) exactly."""
+    """Same recalibration result as Case 1, for the Shapley-pair case: the
+    two interacting causes sum to +20.0, matching known_gap exactly.
+    known_gap was originally a mismatched-scale +1250.0 (pre-Decision 13),
+    then +1.0 (Decision 13's Day 7 Task 3 resolution, correct but
+    single-digit), now +20.0 after Build 3, Day 2, Part 2b's seed-data
+    magnitude recalibration (excluded_statuses=+120.0, aggregation=-100.0
+    -- both causes still nonzero and still interacting via the Shapley-pair
+    engine at the new scale, confirmed directly, not assumed to transfer)."""
     evidence = assemble_investigation_evidence(CASE_2_MULTI_CAUSE)
     total = sum(item.dollar_impact for item in evidence.reconciliation)
 
     assert len(evidence.reconciliation) == 2
-    assert total == CASE_2_MULTI_CAUSE.known_gap == 1.0
+    assert total == CASE_2_MULTI_CAUSE.known_gap == 20.0
     assert evidence.unexplained_residual == 0.0
 
 
