@@ -27,6 +27,7 @@ from tests.fixtures.scenarios import (
 )
 from tests.fixtures.ambiguous_scenarios import (
     AMBIGUOUS_ATTRIBUTION,
+    AMBIGUOUS_CURRENCY_TIMING,
     AMBIGUOUS_CUSTOMER_COUNTING,
     AMBIGUOUS_REFUND_TIMING,
     AMBIGUOUS_REVENUE_RECOGNITION,
@@ -248,6 +249,26 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
             "convention wrong."
         ),
     ),
+    BenchmarkEntry(
+        scenario=AMBIGUOUS_CURRENCY_TIMING,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=True,
+        expected_behavior="escalate",
+        notes=(
+            "Deliberately single-cause (Build 3, Day 2, Part 9), unlike "
+            "AMBIGUOUS_REVENUE_RECOGNITION/CUSTOMER_COUNTING/ATTRIBUTION -- "
+            "routes through assemble_investigation_evidence directly (no "
+            "wrapper needed), returning a real InvestigationEvidence with "
+            "exactly one reconciliation line item (date_field, "
+            "dollar_impact=-2200.0, matching known_gap exactly) and "
+            "unexplained_residual=0.0. Included specifically to test "
+            "escalation recall against a case with a clean, statable "
+            "finding: a correct response finds and states the cause AND "
+            "still declines to declare either convention (transaction-date "
+            "spot rate vs. period-close rate) wrong -- finding one clean "
+            "cause does not mean the system should silently pick a side."
+        ),
+    ),
 ]
 """Build 3, Day 2, Part 2a: all eleven Case 1-11 fixtures, populated
 directly from the Build 3, Day 2, Part 1 benchmark-fitness audit (issue
@@ -267,5 +288,18 @@ and AMBIGUOUS_ATTRIBUTION, both hitting the exact same 3+-cause shape as
 AMBIGUOUS_REVENUE_RECOGNITION and both confirmed to route cleanly through
 the existing, unmodified wrapper (Known-Safe Pattern 2) -- confirming that
 collision is a general risk for this scenario shape, not specific to
-revenue recognition. 5 of the eventual ~10 ambiguous scenarios this
-benchmark's decision-6 split calls for now exist."""
+revenue recognition. Build 3, Day 2, Part 9 (issue TBD) added
+AMBIGUOUS_CURRENCY_TIMING, deliberately single-cause (Known-Safe Pattern 1,
+same shape as AMBIGUOUS_REFUND_TIMING) -- routes through
+assemble_investigation_evidence directly, no wrapper needed, giving
+escalation recall a second Pattern-1 data point. A sixth ambiguous
+scenario, cost-allocation basis, was attempted in the same session and
+found BLOCKED, not authored: this project's DeclaredDefinition schema has
+only three fields (date_field, excluded_statuses, aggregation), and
+neither a headcount-based nor revenue-based cost-allocation convention is
+representable as a single, honest DefinitionDifference in any of them --
+confirmed by live execution, not just reasoning (see
+tests/fixtures/ambiguous_scenarios.py's own comment, just above
+AMBIGUOUS_CURRENCY_TIMING, for the full two-attempt proof). 6 of the
+eventual ~10 ambiguous scenarios this benchmark's decision-6 split calls
+for now exist."""
