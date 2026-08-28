@@ -25,7 +25,12 @@ from tests.fixtures.scenarios import (
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
 )
-from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_REFUND_TIMING, AMBIGUOUS_REVENUE_RECOGNITION
+from tests.fixtures.ambiguous_scenarios import (
+    AMBIGUOUS_ATTRIBUTION,
+    AMBIGUOUS_CUSTOMER_COUNTING,
+    AMBIGUOUS_REFUND_TIMING,
+    AMBIGUOUS_REVENUE_RECOGNITION,
+)
 
 
 class BenchmarkEntry(BaseModel):
@@ -202,6 +207,47 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
             "convention wrong."
         ),
     ),
+    BenchmarkEntry(
+        scenario=AMBIGUOUS_CUSTOMER_COUNTING,
+        ground_truth_check_field="definition_differences",
+        is_ambiguous=True,
+        expected_behavior="escalate",
+        notes=(
+            "Same shape as AMBIGUOUS_REVENUE_RECOGNITION -- must be run "
+            "through assemble_investigation_evidence_for_benchmark, which "
+            "returns a PartialInvestigationEvidence here (confirmed by "
+            "execution, Build 3 Day 2 Part 7), not "
+            "assemble_investigation_evidence directly. Correct evaluation "
+            "requires checking BOTH definition_differences (date_field "
+            "'signup_date' vs 'last_active_date', excluded_statuses "
+            "'(none)' vs 'churned') AND sql_differences (one 'filter' "
+            "finding, the same status exclusion surfacing structurally "
+            "too) for completeness -- reconciliation is [] and "
+            "unexplained_residual is None by design. A correct response "
+            "still declines to declare either convention wrong."
+        ),
+    ),
+    BenchmarkEntry(
+        scenario=AMBIGUOUS_ATTRIBUTION,
+        ground_truth_check_field="definition_differences",
+        is_ambiguous=True,
+        expected_behavior="escalate",
+        notes=(
+            "Same shape as AMBIGUOUS_REVENUE_RECOGNITION and "
+            "AMBIGUOUS_CUSTOMER_COUNTING -- must be run through "
+            "assemble_investigation_evidence_for_benchmark, which returns "
+            "a PartialInvestigationEvidence here (confirmed by execution, "
+            "Build 3 Day 2 Part 7), not assemble_investigation_evidence "
+            "directly. Correct evaluation requires checking BOTH "
+            "definition_differences (date_field 'first_touch_date' vs "
+            "'close_date', excluded_statuses '(none)' vs 'lost, open') "
+            "AND sql_differences (one 'filter' finding, the same status "
+            "exclusion surfacing structurally too) for completeness -- "
+            "reconciliation is [] and unexplained_residual is None by "
+            "design. A correct response still declines to declare either "
+            "convention wrong."
+        ),
+    ),
 ]
 """Build 3, Day 2, Part 2a: all eleven Case 1-11 fixtures, populated
 directly from the Build 3, Day 2, Part 1 benchmark-fitness audit (issue
@@ -215,6 +261,11 @@ ambiguous_scenarios.py). Build 3, Day 2, Part 4 (issue #81) unblocked and
 added the second, AMBIGUOUS_REVENUE_RECOGNITION -- ground_truth_check_field
 ="definition_differences", since it must be run through
 assemble_investigation_evidence_for_benchmark (tests/fixtures/
-benchmark_pipeline.py), not assemble_investigation_evidence directly. The
-remaining 8 ambiguous scenarios this benchmark's decision-6 split calls
-for have not been authored."""
+benchmark_pipeline.py), not assemble_investigation_evidence directly.
+Build 3, Day 2, Part 7 (issue #86) added two more, AMBIGUOUS_CUSTOMER_COUNTING
+and AMBIGUOUS_ATTRIBUTION, both hitting the exact same 3+-cause shape as
+AMBIGUOUS_REVENUE_RECOGNITION and both confirmed to route cleanly through
+the existing, unmodified wrapper (Known-Safe Pattern 2) -- confirming that
+collision is a general risk for this scenario shape, not specific to
+revenue recognition. 5 of the eventual ~10 ambiguous scenarios this
+benchmark's decision-6 split calls for now exist."""

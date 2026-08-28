@@ -420,6 +420,74 @@ AMBIGUOUS_REVENUE_RECOGNITION_CONTRACTS = [
 ]
 
 
+# --- Ambiguous scenario, Customer-counting convention (Build 3, Day 2,
+# Part 7). Both sides declare a real definition; the divergence is a
+# genuine business-rule question (lifetime vs. current-period customer
+# counting) that ALSO carries a real excluded_statuses difference
+# (current-period excludes churned customers) -- deliberately the same
+# two-cause interacting shape as AMBIGUOUS_REVENUE_RECOGNITION, on
+# purpose, to test whether that scenario's 3+-cause collision was tied to
+# its specific business-rule shape or is a more general risk. Generated
+# rather than hand-typed (mirrors Case 2's own recalibration), so the
+# resulting counts land at benchmark scale (hundreds), not single digits.
+# See tests/fixtures/ambiguous_scenarios.py for the full narrative
+# justification and the Scenario definition itself. ---
+def _build_customers_table_with_activity(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
+    con.execute(
+        "CREATE OR REPLACE TABLE customers "
+        "(customer_id INTEGER, status VARCHAR, signup_date DATE, last_active_date DATE)"
+    )
+    con.executemany("INSERT INTO customers VALUES (?, ?, ?, ?)", rows)
+
+
+def _generate_ambiguous_customer_counting_customers() -> list[tuple[int, str, str, str]]:
+    rows: list[tuple[int, str, str, str]] = []
+    next_id = 1
+    for _ in range(300):  # currently active AND engaged this period -- counted both ways
+        rows.append((next_id, "active", "2022-06-01", "2024-02-01"))
+        next_id += 1
+    for _ in range(100):  # churned at some point -- lifetime customer, excluded from current-period by status
+        rows.append((next_id, "churned", "2021-03-01", "2022-09-01"))
+        next_id += 1
+    for _ in range(50):  # still "active" status but hasn't engaged since before the current period
+        rows.append((next_id, "active", "2020-11-01", "2023-05-01"))
+        next_id += 1
+    return rows
+
+
+AMBIGUOUS_CUSTOMER_COUNTING_CUSTOMERS = _generate_ambiguous_customer_counting_customers()
+
+# --- Ambiguous scenario, Attribution/join convention (Build 3, Day 2,
+# Part 7). Both sides declare a real definition; the divergence is a
+# genuine business-rule question (first-touch vs. last-touch deal
+# attribution) that ALSO carries a real excluded_statuses difference
+# (last-touch/sales-comp counts only closed-won deals) -- again
+# deliberately the same two-cause shape as the customer-counting scenario
+# above and AMBIGUOUS_REVENUE_RECOGNITION, to stress-test the same
+# hypothesis from a third, structurally distinct business domain. See
+# tests/fixtures/ambiguous_scenarios.py for the full narrative
+# justification. ---
+def _build_deals_table(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
+    con.execute(
+        "CREATE OR REPLACE TABLE deals "
+        "(deal_id INTEGER, amount DOUBLE, status VARCHAR, "
+        "first_touch_date DATE, close_date DATE)"
+    )
+    con.executemany("INSERT INTO deals VALUES (?, ?, ?, ?, ?)", rows)
+
+
+AMBIGUOUS_ATTRIBUTION_DEALS = [
+    (1, 5000.0, "won", "2024-01-05", "2024-02-10"),   # touched & closed after cutoff
+    (2, 8000.0, "won", "2023-11-01", "2024-01-20"),   # touched before cutoff, closed after
+    (3, 3000.0, "open", "2024-02-01", "2099-01-01"),  # touched after cutoff, not yet closed
+    (4, 4500.0, "lost", "2024-01-15", "2024-03-01"),  # touched after cutoff, lost (no comp value)
+    (5, 6000.0, "won", "2024-03-01", "2024-03-20"),   # touched & closed after cutoff
+    (6, 2000.0, "won", "2023-08-01", "2023-12-15"),   # touched & closed before cutoff
+    (7, 7000.0, "open", "2023-12-01", "2099-01-01"),  # touched before cutoff, not yet closed
+    (8, 5500.0, "won", "2024-01-25", "2024-02-05"),   # touched & closed after cutoff
+]
+
+
 def _seed_file(seed_table: str, side: str, *table_builds: tuple) -> Path:
     """Create (or replace) one seed file at DATA_SAMPLE_DIR/{seed_table}_{side}.duckdb,
     running each (build_fn, rows) pair in table_builds against it in one connection."""
@@ -506,6 +574,14 @@ def build_all() -> None:
         _seed_file(
             "ambiguous_revenue_recognition", side,
             (_build_contracts_table, AMBIGUOUS_REVENUE_RECOGNITION_CONTRACTS),
+        )
+        _seed_file(
+            "ambiguous_customer_counting", side,
+            (_build_customers_table_with_activity, AMBIGUOUS_CUSTOMER_COUNTING_CUSTOMERS),
+        )
+        _seed_file(
+            "ambiguous_attribution", side,
+            (_build_deals_table, AMBIGUOUS_ATTRIBUTION_DEALS),
         )
 
 
