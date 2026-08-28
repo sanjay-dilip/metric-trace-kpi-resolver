@@ -3,9 +3,16 @@
 
 import pytest
 
+from src.definition_diff import diff_definitions
 from src.reconciliation_assembly import assemble_investigation_evidence
 from src.schema import InvestigationEvidence
-from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_REVENUE_RECOGNITION
+from src.sql_diff import diff_sql
+from src.sql_parser import parse_sql
+from tests.fixtures.ambiguous_scenarios import (
+    AMBIGUOUS_ATTRIBUTION,
+    AMBIGUOUS_CUSTOMER_COUNTING,
+    AMBIGUOUS_REVENUE_RECOGNITION,
+)
 from tests.fixtures.benchmark_entries import BENCHMARK_ENTRIES, BenchmarkEntry
 from tests.fixtures.benchmark_pipeline import (
     PartialInvestigationEvidence,
@@ -89,3 +96,137 @@ def test_assemble_investigation_evidence_unaffected_for_all_11_cases():
         assert isinstance(evidence.unexplained_residual, float)
         total = sum(item.dollar_impact for item in evidence.reconciliation)
         assert total + evidence.unexplained_residual == scenario.known_gap
+
+
+# --- Build 3, Day 2, Part 8: committed coverage for AMBIGUOUS_CUSTOMER_COUNTING
+# and AMBIGUOUS_ATTRIBUTION (verification of PR #87's chat-reported figures
+# against real execution, not new scenario design). Both fixtures and their
+# BenchmarkEntrys already existed; this only adds a regression guard, mirroring
+# AMBIGUOUS_REVENUE_RECOGNITION's own coverage above.
+
+
+def test_ambiguous_customer_counting_reported_values_match_seed_execution():
+    """Confirm the fixture's committed reported_value_a/b/known_gap
+    (450.0/300.0/150.0, as reported in chat during Build 3 Day 2 Part 7)
+    are exactly what's on the Scenario object -- these are hand-set fields
+    calibrated to real seed execution per decision 13, so this test reads
+    them directly rather than re-deriving them from a live query."""
+    assert AMBIGUOUS_CUSTOMER_COUNTING.reported_value_a == 450.0
+    assert AMBIGUOUS_CUSTOMER_COUNTING.reported_value_b == 300.0
+    assert AMBIGUOUS_CUSTOMER_COUNTING.known_gap == 150.0
+
+
+def test_ambiguous_customer_counting_findings_match_reported():
+    """Confirm diff_sql and diff_definitions, run directly against the
+    fixture's real sources, produce exactly the findings reported in chat:
+    two SQLStructuralDifference categories (filter, date_field) and two
+    DefinitionDifferences (date_field, excluded_statuses), both declared/
+    high-confidence -- real output, not restated from the prior report."""
+    source_a = AMBIGUOUS_CUSTOMER_COUNTING.source_a
+    source_b = AMBIGUOUS_CUSTOMER_COUNTING.source_b
+
+    sql_differences = diff_sql(parse_sql(source_a.sql), parse_sql(source_b.sql))
+    assert {d.category for d in sql_differences} == {"filter", "date_field"}
+
+    definition_differences = diff_definitions(source_a, source_b)
+    fields = {
+        d.field: (d.source_a_value, d.source_b_value, d.source, d.confidence)
+        for d in definition_differences
+    }
+    assert fields == {
+        "date_field": ("signup_date", "last_active_date", "declared", "high"),
+        "excluded_statuses": ("(none)", "churned", "declared", "high"),
+    }
+
+
+def test_ambiguous_customer_counting_returns_partial_evidence_via_wrapper():
+    """Mirrors test_ambiguous_revenue_recognition_returns_partial_evidence_via_wrapper
+    above: confirm assemble_investigation_evidence_for_benchmark raises the
+    same 3+-cause condition internally (decision 18's confidence="medium"/
+    "high" filter/excluded_statuses gap, not suppressed at high confidence)
+    and returns a PartialInvestigationEvidence, not an InvestigationEvidence,
+    with reconciliation=[], unexplained_residual=None, and the same
+    post-suppression finding shape reported in chat: definition_differences
+    keeps both fields, sql_differences keeps only 'filter' (its 'date_field'
+    finding is suppressed in favor of the definitional one, decision 12)."""
+    entry = next(
+        e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_customer_counting"
+    )
+    assert entry.is_ambiguous is True
+    assert entry.expected_behavior == "escalate"
+
+    evidence = assemble_investigation_evidence_for_benchmark(entry)
+
+    assert isinstance(evidence, PartialInvestigationEvidence)
+    assert not isinstance(evidence, InvestigationEvidence)
+
+    fields = {d.field: (d.source_a_value, d.source_b_value) for d in evidence.definition_differences}
+    assert fields == {
+        "date_field": ("signup_date", "last_active_date"),
+        "excluded_statuses": ("(none)", "churned"),
+    }
+    assert all(d.source == "declared" and d.confidence == "high" for d in evidence.definition_differences)
+    assert [d.category for d in evidence.sql_differences] == ["filter"]
+    assert evidence.reconciliation == []
+    assert evidence.unexplained_residual is None
+
+
+def test_ambiguous_attribution_reported_values_match_seed_execution():
+    """Confirm the fixture's committed reported_value_a/b/known_gap
+    (24000.0/24500.0/-500.0, as reported in chat during Build 3 Day 2
+    Part 7) are exactly what's on the Scenario object."""
+    assert AMBIGUOUS_ATTRIBUTION.reported_value_a == 24000.0
+    assert AMBIGUOUS_ATTRIBUTION.reported_value_b == 24500.0
+    assert AMBIGUOUS_ATTRIBUTION.known_gap == -500.0
+
+
+def test_ambiguous_attribution_findings_match_reported():
+    """Confirm diff_sql and diff_definitions, run directly against the
+    fixture's real sources, produce exactly the findings reported in chat:
+    two SQLStructuralDifference categories (filter, date_field) and two
+    DefinitionDifferences (date_field, excluded_statuses), both declared/
+    high-confidence -- real output, not restated from the prior report."""
+    source_a = AMBIGUOUS_ATTRIBUTION.source_a
+    source_b = AMBIGUOUS_ATTRIBUTION.source_b
+
+    sql_differences = diff_sql(parse_sql(source_a.sql), parse_sql(source_b.sql))
+    assert {d.category for d in sql_differences} == {"filter", "date_field"}
+
+    definition_differences = diff_definitions(source_a, source_b)
+    fields = {
+        d.field: (d.source_a_value, d.source_b_value, d.source, d.confidence)
+        for d in definition_differences
+    }
+    assert fields == {
+        "date_field": ("first_touch_date", "close_date", "declared", "high"),
+        "excluded_statuses": ("(none)", "lost, open", "declared", "high"),
+    }
+
+
+def test_ambiguous_attribution_returns_partial_evidence_via_wrapper():
+    """Mirrors test_ambiguous_revenue_recognition_returns_partial_evidence_via_wrapper
+    above: confirm assemble_investigation_evidence_for_benchmark raises the
+    same 3+-cause condition internally and returns a
+    PartialInvestigationEvidence, not an InvestigationEvidence, with
+    reconciliation=[], unexplained_residual=None, and the same
+    post-suppression finding shape reported in chat."""
+    entry = next(
+        e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_attribution"
+    )
+    assert entry.is_ambiguous is True
+    assert entry.expected_behavior == "escalate"
+
+    evidence = assemble_investigation_evidence_for_benchmark(entry)
+
+    assert isinstance(evidence, PartialInvestigationEvidence)
+    assert not isinstance(evidence, InvestigationEvidence)
+
+    fields = {d.field: (d.source_a_value, d.source_b_value) for d in evidence.definition_differences}
+    assert fields == {
+        "date_field": ("first_touch_date", "close_date"),
+        "excluded_statuses": ("(none)", "lost, open"),
+    }
+    assert all(d.source == "declared" and d.confidence == "high" for d in evidence.definition_differences)
+    assert [d.category for d in evidence.sql_differences] == ["filter"]
+    assert evidence.reconciliation == []
+    assert evidence.unexplained_residual is None
