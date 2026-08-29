@@ -26,6 +26,7 @@ from tests.fixtures.scenarios import (
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
 )
 from tests.fixtures.ambiguous_scenarios import (
+    AMBIGUOUS_ACTIVE_USER_CONVENTION,
     AMBIGUOUS_ATTRIBUTION,
     AMBIGUOUS_CURRENCY_TIMING,
     AMBIGUOUS_CUSTOMER_COUNTING,
@@ -187,66 +188,61 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
     ),
     BenchmarkEntry(
         scenario=AMBIGUOUS_REVENUE_RECOGNITION,
-        ground_truth_check_field="definition_differences",
+        ground_truth_check_field="reconciliation",
         is_ambiguous=True,
         expected_behavior="escalate",
         notes=(
-            "Must be run through assemble_investigation_evidence_for_benchmark "
-            "(tests/fixtures/benchmark_pipeline.py), which returns a "
-            "PartialInvestigationEvidence here (decision 19), not "
-            "assemble_investigation_evidence directly -- the latter raises "
-            "(3 remaining causes, decision 18's medium/high-confidence "
-            "filter/excluded_statuses gap). Correct evaluation requires "
-            "checking BOTH definition_differences (date_field 'booking_date' "
-            "vs 'delivery_date', excluded_statuses '(none)' vs "
-            "'pending_delivery') AND sql_differences (one 'filter' finding, "
-            "the same status exclusion surfacing structurally too) for "
-            "completeness -- reconciliation is [] and unexplained_residual "
-            "is None by design, since escalation was triggered before "
-            "reconciliation was ever computed, not because nothing was "
-            "found. A correct response still declines to declare either "
-            "convention wrong."
+            "Build 3, Day 2, Part 15 (decision 22) update: this scenario now "
+            "completes through assemble_investigation_evidence DIRECTLY, no "
+            "wrapper needed -- decision 22 extends the filter/excluded_statuses "
+            "suppression rule to confidence='high' (suppressing the redundant "
+            "filter finding rather than excluded_statuses, the reverse of the "
+            "low-confidence direction), which reduces this scenario from 3 "
+            "remaining causes to 2, routed to the ordinary Shapley-pair branch. "
+            "Real, execution-verified figures: date_field -1200.0, "
+            "excluded_statuses +1150.0, unexplained_residual=0.0. Superseded "
+            "the prior 'run through assemble_investigation_evidence_for_benchmark' "
+            "note -- Known-Safe Pattern 1 now, not Pattern 2. A correct "
+            "response still declines to declare either convention wrong, "
+            "even with a complete reconciliation available."
         ),
     ),
     BenchmarkEntry(
         scenario=AMBIGUOUS_CUSTOMER_COUNTING,
-        ground_truth_check_field="definition_differences",
+        ground_truth_check_field="reconciliation",
         is_ambiguous=True,
         expected_behavior="escalate",
         notes=(
-            "Same shape as AMBIGUOUS_REVENUE_RECOGNITION -- must be run "
-            "through assemble_investigation_evidence_for_benchmark, which "
-            "returns a PartialInvestigationEvidence here (confirmed by "
-            "execution, Build 3 Day 2 Part 7), not "
-            "assemble_investigation_evidence directly. Correct evaluation "
-            "requires checking BOTH definition_differences (date_field "
-            "'signup_date' vs 'last_active_date', excluded_statuses "
-            "'(none)' vs 'churned') AND sql_differences (one 'filter' "
-            "finding, the same status exclusion surfacing structurally "
-            "too) for completeness -- reconciliation is [] and "
-            "unexplained_residual is None by design. A correct response "
-            "still declines to declare either convention wrong."
+            "Build 3, Day 2, Part 15 (decision 22) update: same shape as "
+            "AMBIGUOUS_REVENUE_RECOGNITION -- now completes through "
+            "assemble_investigation_evidence DIRECTLY (2 remaining causes "
+            "post-suppression, not 3), no wrapper needed. Real, "
+            "execution-verified figures: date_field -0.0, excluded_statuses "
+            "+100.0 -- but unexplained_residual is 50.0, NOT 0.0, unlike "
+            "revenue_recognition/attribution. This is the first time this "
+            "scenario's full reconciliation math has ever been computed "
+            "(it always escalated via the wrapper before decision 22); the "
+            "non-zero residual is reported honestly, not investigated "
+            "further here -- Build 3's benchmark-scoring pass should treat "
+            "this as a real, partially-explained case, not force it to "
+            "read as fully reconciled. A correct response still declines "
+            "to declare either convention wrong."
         ),
     ),
     BenchmarkEntry(
         scenario=AMBIGUOUS_ATTRIBUTION,
-        ground_truth_check_field="definition_differences",
+        ground_truth_check_field="reconciliation",
         is_ambiguous=True,
         expected_behavior="escalate",
         notes=(
-            "Same shape as AMBIGUOUS_REVENUE_RECOGNITION and "
-            "AMBIGUOUS_CUSTOMER_COUNTING -- must be run through "
-            "assemble_investigation_evidence_for_benchmark, which returns "
-            "a PartialInvestigationEvidence here (confirmed by execution, "
-            "Build 3 Day 2 Part 7), not assemble_investigation_evidence "
-            "directly. Correct evaluation requires checking BOTH "
-            "definition_differences (date_field 'first_touch_date' vs "
-            "'close_date', excluded_statuses '(none)' vs 'lost, open') "
-            "AND sql_differences (one 'filter' finding, the same status "
-            "exclusion surfacing structurally too) for completeness -- "
-            "reconciliation is [] and unexplained_residual is None by "
-            "design. A correct response still declines to declare either "
-            "convention wrong."
+            "Build 3, Day 2, Part 15 (decision 22) update: same shape as "
+            "AMBIGUOUS_REVENUE_RECOGNITION/CUSTOMER_COUNTING -- now completes "
+            "through assemble_investigation_evidence DIRECTLY (2 remaining "
+            "causes post-suppression, not 3), no wrapper needed. Real, "
+            "execution-verified figures: date_field -11500.0, "
+            "excluded_statuses +11000.0, unexplained_residual=0.0. A correct "
+            "response still declines to declare either convention wrong, "
+            "even with a complete reconciliation available."
         ),
     ),
     BenchmarkEntry(
@@ -269,6 +265,31 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
             "cause does not mean the system should silently pick a side."
         ),
     ),
+    BenchmarkEntry(
+        scenario=AMBIGUOUS_ACTIVE_USER_CONVENTION,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=True,
+        expected_behavior="escalate",
+        notes=(
+            "Build 3, Day 2, Part 15 (decision 22): the first ambiguous "
+            "scenario testing excluded_statuses as a STANDALONE dimension "
+            "(no co-occurring date_field difference) -- drafted Part 12, "
+            "blocked there and again in Part 14 by two separate code "
+            "gaps, unblocked here by decision 22's confidence-gate "
+            "extension. Raw sql_diff/definition_diff produce a real "
+            "filter/excluded_statuses collision on the same status column "
+            "at confidence='high'; decision 22 suppresses the redundant "
+            "`filter` finding, leaving exactly ONE remaining cause -- "
+            "routes through assemble_investigation_evidence directly (no "
+            "wrapper needed), returning a real InvestigationEvidence with "
+            "exactly one reconciliation line item (excluded_statuses, "
+            "dollar_impact=150.0, matching known_gap exactly) and "
+            "unexplained_residual=0.0. A correct response still declines "
+            "to declare either convention (still-provisioned/capacity vs. "
+            "currently-engaged/health) wrong, even with a clean, single, "
+            "fully-reconciled cause."
+        ),
+    ),
 ]
 """Build 3, Day 2, Part 2a: all eleven Case 1-11 fixtures, populated
 directly from the Build 3, Day 2, Part 1 benchmark-fitness audit (issue
@@ -286,20 +307,40 @@ benchmark_pipeline.py), not assemble_investigation_evidence directly.
 Build 3, Day 2, Part 7 (issue #86) added two more, AMBIGUOUS_CUSTOMER_COUNTING
 and AMBIGUOUS_ATTRIBUTION, both hitting the exact same 3+-cause shape as
 AMBIGUOUS_REVENUE_RECOGNITION and both confirmed to route cleanly through
-the existing, unmodified wrapper (Known-Safe Pattern 2) -- confirming that
-collision is a general risk for this scenario shape, not specific to
-revenue recognition. Build 3, Day 2, Part 9 (issue TBD) added
-AMBIGUOUS_CURRENCY_TIMING, deliberately single-cause (Known-Safe Pattern 1,
-same shape as AMBIGUOUS_REFUND_TIMING) -- routes through
-assemble_investigation_evidence directly, no wrapper needed, giving
-escalation recall a second Pattern-1 data point. A sixth ambiguous
-scenario, cost-allocation basis, was attempted in the same session and
-found BLOCKED, not authored: this project's DeclaredDefinition schema has
-only three fields (date_field, excluded_statuses, aggregation), and
-neither a headcount-based nor revenue-based cost-allocation convention is
-representable as a single, honest DefinitionDifference in any of them --
-confirmed by live execution, not just reasoning (see
-tests/fixtures/ambiguous_scenarios.py's own comment, just above
-AMBIGUOUS_CURRENCY_TIMING, for the full two-attempt proof). 6 of the
-eventual ~10 ambiguous scenarios this benchmark's decision-6 split calls
-for now exist."""
+the wrapper at authoring time (Known-Safe Pattern 2 as it existed then --
+see the Part 15 update below, this no longer holds for any of the three).
+Build 3, Day 2, Part 9 (issue #90) added AMBIGUOUS_CURRENCY_TIMING,
+deliberately single-cause (Known-Safe Pattern 1, same shape as
+AMBIGUOUS_REFUND_TIMING). Two further topics were attempted and found
+BLOCKED, not authored, in the same stretch of sessions, each for a
+distinct, execution-proven reason: cost-allocation basis and
+aggregation-basis/gross-vs-net (Parts 9/11) -- this project's
+DeclaredDefinition schema has only three fields (date_field,
+excluded_statuses, aggregation, function-only), and neither convention is
+representable as a single, honest DefinitionDifference in any of them
+(see tests/fixtures/ambiguous_scenarios.py's own comment, just above
+AMBIGUOUS_CURRENCY_TIMING, for the full proof).
+
+Build 3, Day 2, Part 15 (issue TBD, decision 22) added a sixth real
+scenario, AMBIGUOUS_ACTIVE_USER_CONVENTION -- the standalone-excluded_statuses
+scenario drafted in Part 12, blocked there and again in Part 14 by two
+separate code gaps (a zero-predicate correction gap, then a real
+confidence='high' filter/excluded_statuses same-fact collision that
+crashed the Shapley-pair engine), unblocked by decision 22's extension of
+the filter/excluded_statuses suppression rule to fire at ANY confidence
+level. That same rule change had a consequence this benchmark's earlier
+entries did not anticipate: AMBIGUOUS_REVENUE_RECOGNITION,
+AMBIGUOUS_CUSTOMER_COUNTING, and AMBIGUOUS_ATTRIBUTION ALL share the exact
+same confidence='high' filter/excluded_statuses collision shape, so all
+three now ALSO complete directly through assemble_investigation_evidence
+(2 remaining causes, Shapley-paired) instead of needing the benchmark
+wrapper -- their ground_truth_check_field entries above were updated from
+"definition_differences" to "reconciliation" accordingly, with real,
+re-verified dollar figures. AMBIGUOUS_CUSTOMER_COUNTING's reconciliation
+now shows a genuine, non-zero unexplained_residual (50.0) -- the first
+time this scenario's full dollar math has ever actually been computed,
+reported honestly rather than force-fit. 6 real ambiguous scenarios now
+exist; 2 further topics are confirmed-blocked, not abandoned
+speculatively. The eventual total this benchmark's decision-6 split
+should target is an open question -- see CONTEXT.md, not settled by this
+docstring."""

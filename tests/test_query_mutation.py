@@ -19,7 +19,6 @@ from src.query_mutation import (
     construct_corrected_query,
 )
 from src.schema import SQLStructuralDifference
-from src.self_consistency import assemble_structural_and_definitional_evidence
 from src.sql_diff import diff_sql
 from src.sql_parser import parse_sql
 from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_ATTRIBUTION
@@ -179,17 +178,25 @@ def test_join_type_correction_matches_hand_verified_case_1_source_b():
 def test_filter_correction_matches_hand_verified_ambiguous_attribution_add_direction():
     """Build 3, Day 2, Part 13: apply_filter_correction's ADD direction,
     hand-verified against real data the same way every other correction
-    function in this module is. AMBIGUOUS_ATTRIBUTION's real,
-    post-suppression `filter` finding (source_a lacks a status filter,
+    function in this module is. AMBIGUOUS_ATTRIBUTION's real, RAW
+    (pre-suppression) `filter` finding (source_a lacks a status filter,
     source_b's is `NOT status IN ('lost', 'open')`) is a genuine
     ADD-direction case -- construct_corrected_query, given that finding,
     should add source_b's exact predicate to source_a's SQL and reproduce
     the real, execution-verified result (24000.0 -> 16500.0, excluding
-    'lost'/'open' deals)."""
-    sql_differences = diff_sql(parse_sql(AMBIGUOUS_ATTRIBUTION.source_a.sql), parse_sql(AMBIGUOUS_ATTRIBUTION.source_b.sql))
-    definition_differences = diff_definitions(AMBIGUOUS_ATTRIBUTION.source_a, AMBIGUOUS_ATTRIBUTION.source_b)
-    sql_differences, _ = assemble_structural_and_definitional_evidence(sql_differences, definition_differences)
-    filter_difference = next(d for d in sql_differences if d.category == "filter")
+    'lost'/'open' deals). Uses the RAW diff_sql output directly, not
+    assemble_structural_and_definitional_evidence's post-suppression
+    result: Build 3, Day 2, Part 15 (decision 22) now suppresses this
+    exact finding for AMBIGUOUS_ATTRIBUTION (confidence='high', same fact
+    as its excluded_statuses finding) -- this test validates
+    apply_filter_correction's own mechanics on a real, genuinely-occurring
+    filter finding, independent of whether current suppression rules keep
+    or remove it downstream."""
+    filter_difference = next(
+        d
+        for d in diff_sql(parse_sql(AMBIGUOUS_ATTRIBUTION.source_a.sql), parse_sql(AMBIGUOUS_ATTRIBUTION.source_b.sql))
+        if d.category == "filter"
+    )
 
     db = str(DATA_SAMPLE_DIR / "ambiguous_attribution_a.duckdb")
     mechanical = construct_corrected_query(AMBIGUOUS_ATTRIBUTION.source_a.sql, filter_difference)
