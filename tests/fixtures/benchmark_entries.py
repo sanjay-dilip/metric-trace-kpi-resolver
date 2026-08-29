@@ -214,46 +214,35 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
         expected_behavior="escalate",
         notes=(
             "Build 3, Day 2, Part 15 (decision 22) update: same shape as "
-            "AMBIGUOUS_REVENUE_RECOGNITION -- now completes through "
+            "AMBIGUOUS_REVENUE_RECOGNITION -- completes through "
             "assemble_investigation_evidence DIRECTLY (2 remaining causes "
-            "post-suppression, not 3), no wrapper needed. Real, "
-            "execution-verified figures: date_field -0.0, excluded_statuses "
-            "+100.0 -- but unexplained_residual is 50.0, NOT 0.0, unlike "
-            "revenue_recognition/attribution. "
-            "Build 3, Day 3, Part 1 root-caused the 50.0 residual "
-            "(no longer merely 'reported honestly, not investigated "
-            "further'): confirmed by direct re-execution against real seed "
-            "data that (a) no third cause is silently missed -- diff_sql, "
-            "diff_definitions, and check_self_consistency all return "
-            "exactly the two findings shown above, and no data_quality "
-            "check applies; (b) the seed data has not drifted -- both "
-            "sides' real SQL reproduces reported_value_a=450.0/"
-            "reported_value_b=300.0 exactly. The residual is instead a "
-            "proven artifact of apply_date_field_correction "
-            "(src/query_mutation.py): it swaps only the date COLUMN name "
-            "(signup_date -> last_active_date) and never adjusts the "
-            "comparison THRESHOLD value, so the 'corrected' query still "
-            "filters on '>= 2000-01-01' instead of source_b's real "
-            "'>= 2024-01-01' cutoff -- a no-op filter matching every row, "
-            "which is why date_field's attributed dollar_impact reads as "
-            "-0.0. Reconstructing the Shapley-pair inputs by hand with the "
-            "correct threshold (last_active_date >= '2024-01-01') gives "
-            "x_only=300/both=300, and the resulting attribution "
-            "(date_field=-100.0, excluded_statuses=-50.0) sums to exactly "
-            "-150.0, matching known_gap with zero residual. This is NOT a "
-            "case of 'a small residual is expected and correct' -- it is a "
-            "known, identified tool-limitation artifact. Flagged as a "
-            "separate, unresolved open item (apply_date_field_correction "
-            "is value-blind, not just column-blind) rather than fixed "
-            "here, per this project's stop-and-report discipline; until "
-            "fixed, this entry's ground_truth_check_field=\"reconciliation\" "
-            "figures for date_field/excluded_statuses/unexplained_residual "
-            "should be read as the deterministic pipeline's actual output, "
-            "not as a verified-correct causal decomposition. Build 3's "
-            "benchmark-scoring pass should treat this as a real, "
-            "partially-explained case, not force it to read as fully "
-            "reconciled. A correct response still declines to declare "
-            "either convention wrong."
+            "post-suppression, not 3), no wrapper needed. "
+            "Build 3, Day 3, Part 1 root-caused a then-real 50.0 "
+            "unexplained_residual (date_field -0.0, excluded_statuses "
+            "+100.0) to a genuine bug: apply_date_field_correction "
+            "(src/query_mutation.py) swapped only the date COLUMN name "
+            "(signup_date -> last_active_date) and never adjusted the "
+            "comparison THRESHOLD value, silently keeping source_a's own "
+            "'>= 2000-01-01' cutoff instead of adopting source_b's real "
+            "'>= 2024-01-01' one -- a no-op filter matching every row, "
+            "which is why date_field's attributed dollar_impact read as "
+            "-0.0. Confirmed at the time (by direct re-execution) that no "
+            "third cause was silently missed and the seed data had not "
+            "drifted -- the residual was purely a correction-mechanism "
+            "artifact, not new information about the scenario itself. "
+            "Build 3, Day 3, Part 2 FIXED this: construct_corrected_query "
+            "gained an other_side_sql parameter (src/query_mutation.py's "
+            "new _extract_date_predicate_snippet), so a date_field "
+            "DefinitionDifference correction now adopts the target side's "
+            "real threshold, not just its column name. Real, "
+            "execution-verified figures, post-fix: date_field=100.0, "
+            "excluded_statuses=50.0, summing to known_gap=150.0 exactly -- "
+            "unexplained_residual is now 0.0. This scenario now fully "
+            "reconciles, the same as revenue_recognition/attribution; the "
+            "'partially-explained, not fully reconciled' framing from Day 3 "
+            "Part 1 no longer applies. A correct response still declines to "
+            "declare either convention wrong, even with a complete "
+            "reconciliation available."
         ),
     ),
     BenchmarkEntry(
@@ -364,10 +353,16 @@ three now ALSO complete directly through assemble_investigation_evidence
 wrapper -- their ground_truth_check_field entries above were updated from
 "definition_differences" to "reconciliation" accordingly, with real,
 re-verified dollar figures. AMBIGUOUS_CUSTOMER_COUNTING's reconciliation
-now shows a genuine, non-zero unexplained_residual (50.0) -- the first
-time this scenario's full dollar math has ever actually been computed,
-reported honestly rather than force-fit. 6 real ambiguous scenarios now
-exist; 2 further topics are confirmed-blocked, not abandoned
-speculatively. The eventual total this benchmark's decision-6 split
-should target is an open question -- see CONTEXT.md, not settled by this
-docstring."""
+initially showed a genuine, non-zero unexplained_residual (50.0) -- the
+first time this scenario's full dollar math had ever actually been
+computed, reported honestly rather than force-fit. Build 3, Day 3 (Parts
+1-2) root-caused and then FIXED that residual: it was apply_date_field_correction
+silently keeping the wrong side's date threshold, not a property of the
+scenario itself -- construct_corrected_query's new other_side_sql
+parameter (src/query_mutation.py) fixes it, and this entry's figures were
+recalibrated (date_field=100.0, excluded_statuses=50.0,
+unexplained_residual=0.0), same as this docstring entry's own note above.
+6 real ambiguous scenarios now exist; 2 further topics are
+confirmed-blocked, not abandoned speculatively. The eventual total this
+benchmark's decision-6 split should target is an open question -- see
+CONTEXT.md, not settled by this docstring."""

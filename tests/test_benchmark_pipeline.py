@@ -199,12 +199,23 @@ def test_ambiguous_customer_counting_now_completes_directly_no_wrapper_needed():
     suppressed (filter removed, excluded_statuses survives), reducing 3
     remaining causes to 2 -- this scenario completes through
     assemble_investigation_evidence DIRECTLY, returning a real
-    InvestigationEvidence. Real, execution-verified figures, live-checked
-    before this test was written: date_field=-0.0, excluded_statuses=
-    +100.0, unexplained_residual=50.0 -- NOT 0.0, the first scenario in
-    this project's ambiguous set whose full reconciliation math has ever
-    actually been computed, and it does not fully close. Reported
-    honestly, not force-fit to a clean number."""
+    InvestigationEvidence.
+
+    Build 3, Day 3, Part 2 update: the figures below changed again, this
+    time for a genuine reason, not a re-suppression ripple. Root-caused in
+    Part 1 (docs/decisions.md is not yet updated with this fix as of this
+    entry -- pending a future session per this task's own locked scope):
+    apply_date_field_correction was value-blind, silently keeping source_a's
+    OWN date threshold ('2000-01-01') instead of adopting source_b's real
+    one ('2024-01-01') when correcting the date_field column, which
+    understated date_field's true attribution. Fixed in Part 2
+    (construct_corrected_query's new other_side_sql parameter,
+    src/query_mutation.py's new _extract_date_predicate_snippet). Real,
+    execution-verified figures, post-fix: date_field=100.0,
+    excluded_statuses=50.0, unexplained_residual=0.0 -- this scenario NOW
+    fully reconciles, exactly like AMBIGUOUS_REVENUE_RECOGNITION/ATTRIBUTION,
+    closing the gap this fixture's own prior docstring reported as a
+    genuine, unresolved artifact."""
     evidence = assemble_investigation_evidence(AMBIGUOUS_CUSTOMER_COUNTING)
 
     assert isinstance(evidence, InvestigationEvidence)
@@ -218,8 +229,8 @@ def test_ambiguous_customer_counting_now_completes_directly_no_wrapper_needed():
     assert all(d.source == "declared" and d.confidence == "high" for d in evidence.definition_differences)
 
     impacts = {item.cause.split(":")[0]: item.dollar_impact for item in evidence.reconciliation}
-    assert impacts == {"date_field": -0.0, "excluded_statuses": 100.0}
-    assert evidence.unexplained_residual == 50.0
+    assert impacts == {"date_field": 100.0, "excluded_statuses": 50.0}
+    assert evidence.unexplained_residual == 0.0
 
     entry = next(e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_customer_counting")
     via_wrapper = assemble_investigation_evidence_for_benchmark(entry)
