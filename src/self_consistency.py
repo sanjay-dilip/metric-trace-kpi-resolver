@@ -430,13 +430,21 @@ def _bare_filter_column_from_snippet(snippet: str) -> str | None:
 def _same_filter_exclusion_fact(
     sql_difference: SQLStructuralDifference, definition_difference: DefinitionDifference
 ) -> bool:
-    """"Same underlying fact" for the filter/excluded_statuses pairing
-    (Build 3, Day 1, Part 6, locked design decision): both reference the
-    same status column, AND `definition_difference`'s confidence is
-    EXACTLY "low" -- this rule is deliberately scoped to that confidence
-    level only; a "medium"/"high"-confidence excluded_statuses finding
-    colliding with a filter finding is NOT handled here (left unhandled,
-    a separate open item, not silently extrapolated to).
+    """"Same underlying fact" for the filter/excluded_statuses pairing:
+    both reference the same status column. Build 3, Day 2, Part 15: the
+    confidence gate that previously scoped this check to
+    confidence="low" only (Build 3, Day 1, Part 6) is REMOVED here --
+    "same fact" is now a pure column-identity check, independent of
+    confidence. Decision 22 (docs/decisions.md) records why: a real, live
+    collision at confidence="high" (both declared) was found and proven
+    -- not just theorized -- to crash the Shapley-pair engine (Build 3
+    Day 2 Part 14's standalone-excluded_statuses "active-user convention"
+    scenario), so leaving the confidence gate in place would have kept
+    masking a real bug behind an unproven scope boundary. WHICH of the
+    two findings survives once "same fact" is confirmed is now a
+    SEPARATE decision, made by the caller
+    (assemble_structural_and_definitional_evidence) based on confidence
+    -- this function only answers "is it the same fact," never "who wins."
 
     Unlike `_same_date_field_fact`, there is no stored "which column"
     value to compare on the definitional side: src.definition_diff's
@@ -448,7 +456,7 @@ def _same_filter_exclusion_fact(
     presence-only, so exactly one side has a real predicate and the other
     is the unparseable placeholder) reference the literal column
     "status"."""
-    if definition_difference.field != "excluded_statuses" or definition_difference.confidence != "low":
+    if definition_difference.field != "excluded_statuses":
         return False
     referenced_column = _bare_filter_column_from_snippet(
         sql_difference.query_a_snippet
@@ -475,20 +483,33 @@ def assemble_structural_and_definitional_evidence(
         sql_differences -- the mechanical/structural finding is a downstream
         restatement of the business-meaning definitional finding.
       - `filter`-category SQLStructuralDifference + `excluded_statuses`-field
-        DefinitionDifference tracing to the same status column, ONLY when
-        the DefinitionDifference's confidence is exactly "low" (Build 3 Day
-        1 Part 6, per _same_filter_exclusion_fact): the OPPOSITE direction
-        -- the DefinitionDifference is removed from definition_differences,
-        and the SQLStructuralDifference survives. A "low"-confidence
-        inferred excluded_statuses value is a guess (zero or ambiguous
-        status predicates found); filter's presence/absence is mechanically
-        certain, so here the mechanical finding is the authoritative one,
-        reversing decisions 10/12's own precedent on purpose, not by
-        oversight. Deliberately scoped to confidence="low" only -- a
-        "medium"/"high"-confidence collision on the same column is NOT
-        handled by this rule and is left as a separate, unhandled open
-        item (CONTEXT.md), not silently resolved by extrapolating this
-        rule's direction to it.
+        DefinitionDifference tracing to the same status column
+        (per _same_filter_exclusion_fact) -- WHICH finding survives now
+        depends on confidence, per decision 22 (docs/decisions.md, Build
+        3 Day 2 Part 15, extending decision 18):
+          - confidence="low" (decision 18's original rule, UNCHANGED): the
+            DefinitionDifference is removed, the SQLStructuralDifference
+            survives. A "low"-confidence inferred excluded_statuses value
+            is a guess (zero or ambiguous status predicates found);
+            filter's presence/absence is mechanically certain, so the
+            mechanical finding wins.
+          - confidence="medium"/"high" (NEW, Build 3 Day 2 Part 15): the
+            OPPOSITE -- the SQLStructuralDifference is removed, the
+            DefinitionDifference survives. Once a definitional finding is
+            known (not guessed) to describe the identical correction as
+            the mechanical one, the business-meaning finding is more
+            informative than the bare structural fact, matching decisions
+            10/12's own original precedent (business-declared beats
+            mechanical) rather than decision 18's reversal of it -- decision
+            18's reversal was specifically because a low-confidence GUESS
+            carries no more certainty than the mechanical fact; a
+            medium/high-confidence value carries more. Proven necessary,
+            not just reasoned: a real confidence="high" collision (Build 3
+            Day 2 Part 14) crashed the Shapley-pair engine outright when
+            both findings survived unsuppressed (decision 22).
+        The confidence gate that previously scoped this ENTIRE pairing to
+        "low" only is gone -- "same fact" (column identity) is now checked
+        independent of confidence; confidence only decides direction.
 
     definition_differences was always returned unmodified by this function
     before Build 3 Day 1 Part 6 -- that invariant no longer holds
@@ -543,6 +564,9 @@ def assemble_structural_and_definitional_evidence(
         and excluded_statuses_definitional is not None
         and _same_filter_exclusion_fact(filter_structural, excluded_statuses_definitional)
     ):
-        definition_differences = [diff for diff in definition_differences if diff.field != "excluded_statuses"]
+        if excluded_statuses_definitional.confidence == "low":
+            definition_differences = [diff for diff in definition_differences if diff.field != "excluded_statuses"]
+        else:
+            sql_differences = [diff for diff in sql_differences if diff.category != "filter"]
 
     return sql_differences, definition_differences
