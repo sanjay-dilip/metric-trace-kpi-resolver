@@ -14,10 +14,15 @@ from src.query_mutation import (
     apply_aggregation_correction,
     apply_date_field_correction,
     apply_excluded_statuses_correction,
+    apply_filter_correction,
     apply_join_type_correction,
     construct_corrected_query,
 )
 from src.schema import SQLStructuralDifference
+from src.self_consistency import assemble_structural_and_definitional_evidence
+from src.sql_diff import diff_sql
+from src.sql_parser import parse_sql
+from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_ATTRIBUTION
 from tests.fixtures.scenarios import CASE_1_JOIN_TYPE, CASE_2_MULTI_CAUSE, CASE_3_HYBRID_FALLBACK
 
 
@@ -112,6 +117,41 @@ def test_join_type_correction_matches_hand_verified_case_1_source_b():
     assert _execute_scalar(db, mechanical) == _execute_scalar(db, CASE_1_JOIN_TYPE.source_b.sql) == 300.0
 
 
+def test_filter_correction_matches_hand_verified_ambiguous_attribution_add_direction():
+    """Build 3, Day 2, Part 13: apply_filter_correction's ADD direction,
+    hand-verified against real data the same way every other correction
+    function in this module is. AMBIGUOUS_ATTRIBUTION's real,
+    post-suppression `filter` finding (source_a lacks a status filter,
+    source_b's is `NOT status IN ('lost', 'open')`) is a genuine
+    ADD-direction case -- construct_corrected_query, given that finding,
+    should add source_b's exact predicate to source_a's SQL and reproduce
+    the real, execution-verified result (24000.0 -> 16500.0, excluding
+    'lost'/'open' deals)."""
+    sql_differences = diff_sql(parse_sql(AMBIGUOUS_ATTRIBUTION.source_a.sql), parse_sql(AMBIGUOUS_ATTRIBUTION.source_b.sql))
+    definition_differences = diff_definitions(AMBIGUOUS_ATTRIBUTION.source_a, AMBIGUOUS_ATTRIBUTION.source_b)
+    sql_differences, _ = assemble_structural_and_definitional_evidence(sql_differences, definition_differences)
+    filter_difference = next(d for d in sql_differences if d.category == "filter")
+
+    db = str(DATA_SAMPLE_DIR / "ambiguous_attribution_a.duckdb")
+    mechanical = construct_corrected_query(AMBIGUOUS_ATTRIBUTION.source_a.sql, filter_difference)
+
+    assert _execute_scalar(db, AMBIGUOUS_ATTRIBUTION.source_a.sql) == 24000.0
+    assert _execute_scalar(db, mechanical) == 16500.0
+
+    direct = apply_filter_correction(AMBIGUOUS_ATTRIBUTION.source_a.sql, filter_difference.query_b_snippet)
+    assert _execute_scalar(db, direct) == 16500.0
+
+
+def test_filter_correction_rejects_adding_a_second_predicate_on_an_already_filtered_column():
+    """Defensive check: src.sql_diff._diff_filters is presence-only, so a
+    genuine `filter` finding should never pair a real predicate on BOTH
+    sides of the same column -- if it somehow did, apply_filter_correction
+    must raise rather than silently double-adding or overwriting."""
+    already_filtered_sql = "SELECT SUM(amount) AS revenue FROM deals WHERE status = 'active'"
+    with pytest.raises(ValueError, match="already has its own predicate"):
+        apply_filter_correction(already_filtered_sql, "NOT status IN ('lost', 'open')")
+
+
 def test_construct_corrected_query_dispatches_real_definition_differences():
     """The dispatcher, fed the actual DefinitionDifference objects Day 3's
     diff_definitions produces for Case 2, should reach the same results as
@@ -128,10 +168,16 @@ def test_construct_corrected_query_dispatches_real_definition_differences():
     assert results == {"excluded_statuses": 200.0, "aggregation": 420.0}
 
 
-def test_construct_corrected_query_fails_loudly_on_unsupported_category():
-    """'filter' is a real SQLStructuralDifference category (src/schema.py)
-    with no mutation rule -- the dispatcher must raise, not silently pass
-    the SQL through unmodified."""
+def test_construct_corrected_query_filter_reverse_direction_still_fails_loudly():
+    """'filter' gained a mutation rule in Build 3, Day 2, Part 13
+    (apply_filter_correction) -- but ADD direction only, correcting a side
+    MISSING the filter toward the other side's real predicate. This
+    fixture's shape is the REVERSE direction (source_a HAS the filter,
+    source_b's snippet is the "(no filter on this column)" placeholder --
+    the default target, per construct_corrected_query's "adopt B's value"
+    convention), which apply_filter_correction explicitly does not
+    support -- the dispatcher must still raise, not silently pass the SQL
+    through unmodified or misinterpret the placeholder as a real target."""
     unsupported = SQLStructuralDifference(
         category="filter",
         description="source_a filters on 'region', source_b has no equivalent filter",
@@ -144,8 +190,9 @@ def test_construct_corrected_query_fails_loudly_on_unsupported_category():
 
 @pytest.mark.parametrize("category", ["distinct", "grouping", "other"])
 def test_construct_corrected_query_fails_loudly_on_every_uncovered_category(category):
-    """Same fail-loud contract for the other three uncovered
-    SQLStructuralDifference categories, not just 'filter'."""
+    """Same fail-loud contract for the three SQLStructuralDifference
+    categories with NO mutation rule at all -- distinct from 'filter'
+    (Part 13, above), which now has a rule for one direction only."""
     unsupported = SQLStructuralDifference(
         category=category,
         description="test",
