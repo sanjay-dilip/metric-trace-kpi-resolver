@@ -107,6 +107,65 @@ def test_excluded_statuses_correction_with_empty_target_removes_filter_entirely(
     assert "where" not in corrected_single.lower()
 
 
+def test_excluded_statuses_correction_zero_predicate_add_matches_hand_verified_result():
+    """Build 3, Day 2, Part 14: apply_excluded_statuses_correction's new
+    zero-predicate ADD case, hand-verified against real Case 2 seed data
+    the same way every other correction function in this module is. A
+    query with NO status predicate at all (real Case 2 customers table,
+    date filter only, real count 350) mechanically gains a new NEQ
+    exclusion predicate and reproduces the hand-written equivalent's real
+    executed result (350 -> 300, excluding 'churned') -- not just an AST
+    shape assertion."""
+    db = str(DATA_SAMPLE_DIR / "case_02_multi_cause_a.duckdb")
+    no_filter_sql = "SELECT COUNT(DISTINCT customer_id) AS active_customers FROM customers WHERE signup_date >= '2024-01-01'"
+    hand_written = (
+        "SELECT COUNT(DISTINCT customer_id) AS active_customers FROM customers "
+        "WHERE signup_date >= '2024-01-01' AND status <> 'churned'"
+    )
+
+    mechanical = apply_excluded_statuses_correction(no_filter_sql, ["churned"])
+
+    assert _execute_scalar(db, no_filter_sql) == 350.0
+    assert _execute_scalar(db, mechanical) == _execute_scalar(db, hand_written) == 300.0
+
+
+def test_excluded_statuses_correction_zero_predicate_add_multiple_statuses():
+    """Same zero-predicate ADD case, multiple target statuses -- must build
+    a NOT IN (...) predicate, not just the single-value NEQ shape."""
+    corrected = apply_excluded_statuses_correction(
+        "SELECT COUNT(id) FROM t WHERE signup_date <= '2024-06-01'", ["lost", "open"]
+    )
+    assert "NOT status IN ('lost', 'open')" in corrected
+
+
+def test_excluded_statuses_correction_zero_predicate_no_where_clause_at_all():
+    """The zero-predicate ADD case must also handle a query with no WHERE
+    clause whatsoever, mirroring apply_filter_correction's own verified
+    "create a WHERE from scratch" behavior (Part 13) -- not assumed to
+    transfer, confirmed directly."""
+    corrected = apply_excluded_statuses_correction("SELECT COUNT(id) FROM t", ["suspended"])
+    assert corrected == "SELECT COUNT(id) FROM t WHERE status <> 'suspended'"
+
+
+def test_excluded_statuses_correction_zero_predicate_empty_target_is_a_noop():
+    """Zero existing predicates AND an empty target (already correct
+    toward zero exclusions) must return the SQL unchanged, not raise --
+    this shape shouldn't arise from a real diff_definitions comparison,
+    but is handled explicitly rather than silently mishandled."""
+    sql = "SELECT COUNT(id) FROM t WHERE signup_date <= '2024-06-01'"
+    assert apply_excluded_statuses_correction(sql, []) == sql
+
+
+def test_excluded_statuses_correction_multiple_predicates_still_raises_unaffected():
+    """The existing multiple-predicates-raise discipline (populated path)
+    is untouched by Part 14's zero-predicate branch -- confirm directly,
+    not just by re-running Cases 2/4/7's own single-predicate fixtures."""
+    with pytest.raises(ValueError, match="requires exactly one status-filter predicate; found 2"):
+        apply_excluded_statuses_correction(
+            "SELECT SUM(amount) FROM t WHERE status NOT IN ('a') AND status != 'b'", ["x"]
+        )
+
+
 def test_join_type_correction_matches_hand_verified_case_1_source_b():
     """Case 1's single_cause_attribution test compares source A's LEFT JOIN
     against source B's INNER JOIN directly; mechanically correcting A's join
