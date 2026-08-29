@@ -62,14 +62,27 @@ _SUPPORTED_JOIN_TARGETS = ("INNER", "LEFT", "RIGHT", "FULL")
 _SUPPORTED_AGGREGATION_TARGETS = ("sum", "count", "count_distinct")
 
 
-def apply_date_field_correction(sql: str, target_field: str) -> str:
+def apply_date_field_correction(sql: str, target_field: str, target_predicate: str | None = None) -> str:
     """Swap the date column used in date-based filtering to `target_field`.
 
     Requires exactly one existing date-like column in `sql` (per
     src.sql_parser's date-column heuristic) -- if zero or more than one is
     found, which column to correct is ambiguous, so this raises rather than
-    guessing. The original column's table qualifier (if any, e.g. "o." in
-    "o.order_date") is preserved; only the bare field name is replaced.
+    guessing.
+
+    `target_predicate` (Build 3, Day 3, Part 2 -- fixes a real, previously-
+    undiscovered gap, see the module-level note below): when given, the
+    ENTIRE matched predicate leaf is replaced with `target_predicate`
+    (parsed via sqlglot), correcting both the column AND the comparison
+    threshold/operator to the target side's actual values -- not just the
+    column name. When omitted (default, unchanged from this function's
+    original Day 6 behavior), only the bare column identifier is renamed in
+    place and the original threshold/operator are preserved -- the correct
+    behavior for a SelfConsistencyIssue correction, which has no "other
+    side" predicate to adopt (a source is only ever compared against its
+    own declared definition, not another source's real SQL), and the
+    default when construct_corrected_query has no other_side_sql to draw
+    a real predicate from.
     """
     parsed = parse_sql(sql)
     existing_bare = sorted({_bare_column(column) for column in parsed.date_columns})
@@ -85,6 +98,21 @@ def apply_date_field_correction(sql: str, target_field: str) -> str:
     if where is None:
         raise ValueError("apply_date_field_correction found no WHERE clause to correct a date column in.")
 
+    if target_predicate is not None:
+        leaves = [
+            leaf
+            for leaf in _split_and_condition_nodes(where.this)
+            if any(_bare_column(column.sql()) == current_bare for column in leaf.find_all(exp.Column))
+        ]
+        if len(leaves) != 1:
+            raise ValueError(
+                f"apply_date_field_correction requires exactly one predicate "
+                f"referencing date column '{current_bare}' to replace with a full "
+                f"target predicate; found {len(leaves)} in the given SQL."
+            )
+        leaves[0].replace(sqlglot.condition(target_predicate))
+        return tree.sql()
+
     matched = False
     for column in where.find_all(exp.Column):
         if _bare_column(column.sql()) == current_bare:
@@ -96,6 +124,43 @@ def apply_date_field_correction(sql: str, target_field: str) -> str:
             "parse_sql but could not find a matching Column node to rewrite."
         )
     return tree.sql()
+
+
+def _extract_date_predicate_snippet(sql: str, column: str) -> str:
+    """Extract the full raw predicate text (column, operator, AND threshold
+    value) for `column`'s date filter in `sql` -- e.g. "last_active_date >=
+    '2024-01-01'" -- so a DefinitionDifference('date_field') correction can
+    adopt the target side's REAL threshold, not just its column name. Build
+    3, Day 3, Part 2: apply_date_field_correction's original column-only-
+    swap silently kept the corrected side's OWN threshold literal, which is
+    only correct when both sides happen to already use the identical
+    threshold (true for Case 3 and all three then-committed ambiguous
+    scenarios, confirmed by direct execution, but not a general guarantee --
+    AMBIGUOUS_CUSTOMER_COUNTING's two sides use genuinely different
+    thresholds, '2000-01-01' vs '2024-01-01', and that mismatch is exactly
+    what produced its 50.0 unexplained_residual). Requires exactly one WHERE
+    predicate referencing the bare `column` in `sql` -- multiple or zero
+    matches make which predicate to adopt ambiguous, so this raises rather
+    than guessing, the same discipline every other snippet-extraction
+    helper in this module already follows.
+    """
+    tree = sqlglot.parse_one(sql)
+    where = tree.find(exp.Where)
+    leaves = (
+        [
+            leaf
+            for leaf in _split_and_condition_nodes(where.this)
+            if any(_bare_column(col.sql()) == column for col in leaf.find_all(exp.Column))
+        ]
+        if where is not None
+        else []
+    )
+    if len(leaves) != 1:
+        raise ValueError(
+            f"_extract_date_predicate_snippet requires exactly one predicate "
+            f"referencing column '{column}' in the other side's SQL; found {len(leaves)}."
+        )
+    return leaves[0].sql()
 
 
 def _split_and_condition_nodes(node: exp.Expression) -> list[exp.Expression]:
@@ -446,6 +511,7 @@ def construct_corrected_query(
     original_sql: str,
     difference: DefinitionDifference | SelfConsistencyIssue | SQLStructuralDifference,
     target_value: str | None = None,
+    other_side_sql: str | None = None,
 ) -> str:
     """Route `difference` to the correct mutation function based on its
     field/category and apply it to `original_sql`, returning the corrected
@@ -480,6 +546,26 @@ def construct_corrected_query(
         unconditionally, regardless of target_value.
 
     In every case an explicit `target_value` argument overrides the default.
+
+    `other_side_sql` (Build 3, Day 3, Part 2, new parameter -- fixes a real
+    gap found root-causing AMBIGUOUS_CUSTOMER_COUNTING's 50.0
+    unexplained_residual): for a DefinitionDifference on `date_field` only,
+    when `target_value` was NOT manually overridden, `other_side_sql` (the
+    OTHER source's real, uncorrected SQL) is parsed to extract the target
+    column's actual filter predicate -- column AND comparison threshold --
+    via _extract_date_predicate_snippet, so the corrected query adopts the
+    target side's REAL threshold rather than silently keeping
+    `original_sql`'s own, possibly-different one (apply_date_field_correction's
+    original Day 6 behavior, still the fallback when `other_side_sql` is
+    omitted). This value was not previously accessible at this function's
+    call site at all -- no existing field on DefinitionDifference or
+    SQLStructuralDifference (once decision 12 suppression discards the
+    latter) carries a real threshold literal, so a new parameter, not a
+    smarter default, was required. Ignored for every other difference
+    type/field/category -- SelfConsistencyIssue has no "other side" to draw
+    a threshold from at all (see apply_date_field_correction's own
+    docstring), and non-date_field DefinitionDifference fields/SQLStructuralDifference
+    categories have their own, already-correct target-value mechanisms.
     """
     if isinstance(difference, SelfConsistencyIssue):
         target = target_value if target_value is not None else difference.declared_value
@@ -487,6 +573,9 @@ def construct_corrected_query(
 
     if isinstance(difference, DefinitionDifference):
         target = target_value if target_value is not None else difference.source_b_value
+        if difference.field == "date_field" and target_value is None and other_side_sql is not None:
+            target_predicate = _extract_date_predicate_snippet(other_side_sql, target)
+            return apply_date_field_correction(original_sql, target, target_predicate)
         return _dispatch_field(original_sql, difference.field, target)
 
     if isinstance(difference, SQLStructuralDifference):

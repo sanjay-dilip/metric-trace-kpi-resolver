@@ -88,13 +88,20 @@ def _describe(difference: _Difference) -> str:
 
 
 def _single_cause_line_item(
-    source_a: DashboardSource, seed_db_path_a: str, difference: _Difference
+    source_a: DashboardSource, source_b: DashboardSource, seed_db_path_a: str, difference: _Difference
 ) -> ReconciliationLineItem:
     """One non-interacting cause, corrected on source A toward source B's
     value (construct_corrected_query's default target), attributed via
     single_cause_attribution (src/reconciliation.py, Day 5 Task 2, reused
-    as-is) and sign-oriented to known_gap's convention."""
-    corrected_sql = construct_corrected_query(source_a.sql, difference)
+    as-is) and sign-oriented to known_gap's convention.
+
+    `source_b` (Build 3, Day 3, Part 2, new parameter): passed through to
+    construct_corrected_query as `other_side_sql` so a `date_field`
+    DefinitionDifference correction can adopt source_b's real threshold, not
+    just its column name (see construct_corrected_query's own docstring) --
+    a no-op for every other difference type/field, which ignore
+    other_side_sql entirely."""
+    corrected_sql = construct_corrected_query(source_a.sql, difference, other_side_sql=source_b.sql)
     raw_delta = single_cause_attribution(seed_db_path_a, source_a.sql, corrected_sql)
     return ReconciliationLineItem(
         cause=_describe(difference),
@@ -105,6 +112,7 @@ def _single_cause_line_item(
 
 def _shapley_pair_line_items(
     source_a: DashboardSource,
+    source_b: DashboardSource,
     seed_db_path_a: str,
     difference_x: _Difference,
     difference_y: _Difference,
@@ -114,11 +122,16 @@ def _shapley_pair_line_items(
     Day 5 Task 2, reused as-is). x_only/y_only/both are constructed by
     chaining construct_corrected_query rather than hand-authored SQL --
     verified during this task to reproduce Case 2's hand-written "both" SQL
-    exactly (4.0, matching tests/test_reconciliation.py's committed figure)."""
+    exactly (4.0, matching tests/test_reconciliation.py's committed figure).
+
+    `source_b` (Build 3, Day 3, Part 2, new parameter): same reasoning as
+    _single_cause_line_item's own -- passed through as `other_side_sql` to
+    every construct_corrected_query call below, a no-op unless the
+    difference being corrected is a `date_field` DefinitionDifference."""
     baseline_sql = source_a.sql
-    x_only_sql = construct_corrected_query(baseline_sql, difference_x)
-    y_only_sql = construct_corrected_query(baseline_sql, difference_y)
-    both_sql = construct_corrected_query(x_only_sql, difference_y)
+    x_only_sql = construct_corrected_query(baseline_sql, difference_x, other_side_sql=source_b.sql)
+    y_only_sql = construct_corrected_query(baseline_sql, difference_y, other_side_sql=source_b.sql)
+    both_sql = construct_corrected_query(x_only_sql, difference_y, other_side_sql=source_b.sql)
 
     x_attr, y_attr = shapley_pair_attribution(seed_db_path_a, baseline_sql, x_only_sql, y_only_sql, both_sql)
 
@@ -201,13 +214,13 @@ def assemble_reconciliation_line_items(
     line_items: list[ReconciliationLineItem] = []
 
     for difference_x, difference_y in interacting_pairs:
-        line_items.extend(_shapley_pair_line_items(source_a, seed_db_path_a, difference_x, difference_y))
+        line_items.extend(_shapley_pair_line_items(source_a, source_b, seed_db_path_a, difference_x, difference_y))
 
     all_cross_source_differences: list[_Difference] = [*definition_differences, *sql_differences]
     for difference in all_cross_source_differences:
         if any(difference == paired for paired in paired_differences):
             continue
-        line_items.append(_single_cause_line_item(source_a, seed_db_path_a, difference))
+        line_items.append(_single_cause_line_item(source_a, source_b, seed_db_path_a, difference))
 
     for issue in self_consistency_issues:
         line_items.append(_self_consistency_line_item(source_a, source_b, issue))

@@ -21,7 +21,7 @@ from src.query_mutation import (
 from src.schema import SQLStructuralDifference
 from src.sql_diff import diff_sql
 from src.sql_parser import parse_sql
-from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_ATTRIBUTION
+from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_ATTRIBUTION, AMBIGUOUS_CUSTOMER_COUNTING
 from tests.fixtures.scenarios import CASE_1_JOIN_TYPE, CASE_2_MULTI_CAUSE, CASE_3_HYBRID_FALLBACK
 
 
@@ -70,6 +70,57 @@ def test_date_field_correction_matches_hand_verified_case_3_x_only():
     mechanical = apply_date_field_correction(CASE_3_HYBRID_FALLBACK.source_a.sql, "created_at")
 
     assert _execute_scalar(db, mechanical) == _execute_scalar(db, hand_written_x_only) == 1150.0
+
+
+def test_date_field_correction_with_target_predicate_adopts_real_threshold():
+    """Build 3, Day 3, Part 2: apply_date_field_correction's original
+    column-only swap (tested above) is provably WRONG whenever the two
+    sides' real date thresholds differ, not just their column names --
+    AMBIGUOUS_CUSTOMER_COUNTING is exactly that case (source_a's own
+    threshold, '2000-01-01', is a permissive no-op; source_b's real
+    threshold is '2024-01-01'). Confirms the new target_predicate parameter
+    replaces the whole predicate (column AND threshold), matching a
+    hand-written query, not just re-running without error."""
+    db = str(DATA_SAMPLE_DIR / "ambiguous_customer_counting_a.duckdb")
+    hand_written_x_only = (
+        "SELECT COUNT(DISTINCT customer_id) AS customer_count FROM customers "
+        "WHERE last_active_date >= '2024-01-01'"
+    )
+    column_only_swap = apply_date_field_correction(AMBIGUOUS_CUSTOMER_COUNTING.source_a.sql, "last_active_date")
+    threshold_aware = apply_date_field_correction(
+        AMBIGUOUS_CUSTOMER_COUNTING.source_a.sql,
+        "last_active_date",
+        target_predicate="last_active_date >= '2024-01-01'",
+    )
+
+    # The bug this fix closes, proven directly: the old column-only swap
+    # keeps source_a's own '2000-01-01' threshold, matching every row --
+    # a silent no-op, not a real correction.
+    assert _execute_scalar(db, column_only_swap) == 450.0
+    assert _execute_scalar(db, threshold_aware) == _execute_scalar(db, hand_written_x_only) == 300.0
+
+
+def test_construct_corrected_query_other_side_sql_fixes_customer_counting_end_to_end():
+    """Confirms construct_corrected_query's new other_side_sql parameter
+    reaches the fix above for a real DefinitionDifference, end to end --
+    not just that apply_date_field_correction works in isolation."""
+    definition_differences = diff_definitions(
+        AMBIGUOUS_CUSTOMER_COUNTING.source_a, AMBIGUOUS_CUSTOMER_COUNTING.source_b
+    )
+    date_field_difference = next(d for d in definition_differences if d.field == "date_field")
+
+    db = str(DATA_SAMPLE_DIR / "ambiguous_customer_counting_a.duckdb")
+    without_other_side_sql = construct_corrected_query(
+        AMBIGUOUS_CUSTOMER_COUNTING.source_a.sql, date_field_difference
+    )
+    with_other_side_sql = construct_corrected_query(
+        AMBIGUOUS_CUSTOMER_COUNTING.source_a.sql,
+        date_field_difference,
+        other_side_sql=AMBIGUOUS_CUSTOMER_COUNTING.source_b.sql,
+    )
+
+    assert _execute_scalar(db, without_other_side_sql) == 450.0  # the old, silently-wrong no-op result
+    assert _execute_scalar(db, with_other_side_sql) == 300.0  # the fixed, threshold-aware result
 
 
 def test_excluded_statuses_correction_matches_hand_verified_case_3_y_only():
