@@ -319,81 +319,23 @@ def test_raises_on_more_than_two_remaining_causes():
         assemble_investigation_evidence(scenario)
 
 
-def test_excluded_statuses_and_filter_same_fact_at_high_confidence_crashes_the_shapley_pair():
-    """Build 3, Day 2, Part 14 -- a real, previously-undiscovered finding
-    from authoring the standalone-excluded_statuses ambiguous scenario
-    ("active-user convention, suspended accounts"), NOT a hypothetical
-    constructed to prove a rule. Part 13's apply_filter_correction fix
-    unblocked the standalone shape's own zero-predicate excluded_statuses
-    gap, but the scenario still does not complete: source_a lacks BOTH a
-    status predicate (excluded_statuses='(none)') and a filter on 'status'
-    (sql_diff's own `filter` category), source_b has both (declared
-    excluded_statuses=['suspended'], SQL filters `status != 'suspended'`).
-    Neither Day 4's precedence rule (both sides self-consistent, confirmed
-    below) nor decision 18's suppression (fires only at
-    confidence='low' -- this pairing is 'high', both declared) removes
-    either finding, so exactly 2 remain and this function's own
-    documented rule routes them to the Shapley-pair branch.
-
-    That branch's own x_only/y_only/both construction (assemble_reconciliation_line_items's
-    _shapley_pair_line_items, src/reconciliation_assembly.py) assumes the
-    pair are two INDEPENDENT corrections whose joint effect can be
-    Shapley-averaged -- but here they are the exact same underlying fact
-    detected by two different tools: x_only_sql (excluded_statuses
-    corrected) and y_only_sql (filter corrected) are confirmed, by direct
-    inspection, to be BYTE-IDENTICAL strings (both add the identical
-    `status <> 'suspended'` predicate). Constructing `both_sql` then tries
-    to apply the SAME predicate a second time on top of the first, which
-    apply_filter_correction's own defensive "already has its own
-    predicate" guard (Part 13) correctly refuses, rather than silently
-    double-adding it.
-
-    This is the exact confidence='medium'/'high' filter/excluded_statuses
-    collision decision 18 explicitly left UNHANDLED (CONTEXT.md Open
-    Items) -- now confirmed, for the first time, to reach a genuine
-    2-cause Shapley-pair path (not just the 3+-cause guard every prior
-    declared/high-confidence pairing hit). Resolving it (a new suppression
-    rule, or a different Shapley-pair strategy for same-fact pairs) is a
-    real design decision, explicitly NOT made here -- this test documents
-    the failure as found, per this session's stop-and-report discipline;
-    no fixture, BenchmarkEntry, or suppression rule was authored."""
-    source_a = DashboardSource(
-        label="capacity_planning_view",
-        sql="SELECT COUNT(account_id) AS active_users FROM accounts WHERE signup_date <= '2024-06-01'",
-        declared_definition=DeclaredDefinition(date_field="signup_date", excluded_statuses=[], aggregation="count"),
-    )
-    source_b = DashboardSource(
-        label="engagement_health_view",
-        sql=(
-            "SELECT COUNT(account_id) AS active_users FROM accounts "
-            "WHERE signup_date <= '2024-06-01' AND status != 'suspended'"
-        ),
-        declared_definition=DeclaredDefinition(
-            date_field="signup_date", excluded_statuses=["suspended"], aggregation="count"
-        ),
-    )
-    assert check_self_consistency(source_a, "a") == []
-    assert check_self_consistency(source_b, "b") == []
-
-    scenario = Scenario(
-        scenario_id="synthetic_excluded_statuses_filter_same_fact_collision",
-        description=(
-            "Synthetic (mirrors the real, blocked 'active-user convention' "
-            "scenario draft exactly): excluded_statuses and filter both "
-            "trace to the same status-column fact at high confidence, "
-            "proving the Shapley-pair branch cannot yet handle a same-fact "
-            "pair the way single-cause attribution can."
-        ),
-        source_a=source_a,
-        source_b=source_b,
-        reported_value_a=550.0,
-        reported_value_b=400.0,
-        known_gap=150.0,
-        seed_table="nonexistent_seed_table",  # never reached: the raise fires before any SQL execution
-    )
-
-    with pytest.raises(ValueError, match="already has its own predicate referencing column 'status'"):
-        assemble_investigation_evidence(scenario)
+# NOTE (Build 3, Day 2, Part 15): the synthetic test that used to live here
+# (test_excluded_statuses_and_filter_same_fact_at_high_confidence_crashes_the_shapley_pair,
+# Part 14) documented a real crash for the "active-user convention"
+# standalone-excluded_statuses scenario -- excluded_statuses and filter
+# colliding at confidence="high" reached the Shapley-pair branch and
+# crashed constructing the joint counterfactual. Decision 22 (Part 15,
+# docs/decisions.md) fixed this directly by extending the
+# filter/excluded_statuses suppression rule to fire at confidence="high"
+# too (suppressing filter, keeping excluded_statuses -- the reverse
+# direction from the low-confidence case). That synthetic test's premise
+# (an unresolvable crash) is no longer true, and it cannot be converted to
+# a positive test in place -- once the correction actually runs to
+# completion it needs real seed data to execute against, not a
+# "nonexistent_seed_table" placeholder. The real proof now lives with the
+# fully-authored AMBIGUOUS_ACTIVE_USER_CONVENTION scenario and its own
+# committed tests (tests/test_benchmark_pipeline.py), the same template
+# every other ambiguous scenario in this project uses.
 
 
 def test_case_13_full_pipeline_now_raises_on_filter_alone_after_suppression():

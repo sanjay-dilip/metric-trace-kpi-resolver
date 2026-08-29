@@ -6,9 +6,12 @@ import pytest
 from src.definition_diff import diff_definitions
 from src.reconciliation_assembly import assemble_investigation_evidence
 from src.schema import InvestigationEvidence
+from src.scenario import DashboardSource, DeclaredDefinition, Scenario
+from src.self_consistency import check_self_consistency
 from src.sql_diff import diff_sql
 from src.sql_parser import parse_sql
 from tests.fixtures.ambiguous_scenarios import (
+    AMBIGUOUS_ACTIVE_USER_CONVENTION,
     AMBIGUOUS_ATTRIBUTION,
     AMBIGUOUS_CURRENCY_TIMING,
     AMBIGUOUS_CUSTOMER_COUNTING,
@@ -23,22 +26,24 @@ from tests.fixtures.benchmark_pipeline import (
 from tests.fixtures.scenarios import SCENARIOS
 
 
-def test_ambiguous_revenue_recognition_returns_partial_evidence_via_wrapper():
-    """The whole point of A3-ii: a genuinely ambiguous scenario whose
-    interacting causes exceed the 2-cause Shapley pairing this project
-    supports must still surface its individually-found causes through the
-    benchmark wrapper, rather than the caller getting nothing but a raised
-    exception. Part 5: the returned object must be a
-    PartialInvestigationEvidence, never an InvestigationEvidence -- the
-    two are structurally independent types, not sub/superclass."""
-    entry = next(e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_revenue_recognition")
-    assert entry.is_ambiguous is True
-    assert entry.expected_behavior == "escalate"
+def test_ambiguous_revenue_recognition_now_completes_directly_no_wrapper_needed():
+    """Build 3, Day 2, Part 15 (decision 22) superseded this test's own
+    original premise: AMBIGUOUS_REVENUE_RECOGNITION used to need the
+    benchmark wrapper because its filter/excluded_statuses collision
+    (confidence='high') was NOT suppressed, reaching 3 remaining causes.
+    Decision 22 extends suppression to fire at confidence='high' too
+    (removing filter, keeping excluded_statuses, the reverse direction
+    from the low-confidence case) -- this scenario now reduces to 2
+    remaining causes (date_field, excluded_statuses) and completes
+    through assemble_investigation_evidence DIRECTLY, returning a real
+    InvestigationEvidence, not a PartialInvestigationEvidence. Real,
+    execution-verified figures, live-checked before this test was
+    written: date_field=-1200.0, excluded_statuses=+1150.0,
+    unexplained_residual=0.0."""
+    evidence = assemble_investigation_evidence(AMBIGUOUS_REVENUE_RECOGNITION)
 
-    evidence = assemble_investigation_evidence_for_benchmark(entry)
-
-    assert isinstance(evidence, PartialInvestigationEvidence)
-    assert not isinstance(evidence, InvestigationEvidence)
+    assert isinstance(evidence, InvestigationEvidence)
+    assert evidence.sql_differences == []
 
     fields = {d.field: (d.source_a_value, d.source_b_value) for d in evidence.definition_differences}
     assert fields == {
@@ -46,21 +51,67 @@ def test_ambiguous_revenue_recognition_returns_partial_evidence_via_wrapper():
         "excluded_statuses": ("(none)", "pending_delivery"),
     }
     assert all(d.source == "declared" and d.confidence == "high" for d in evidence.definition_differences)
-    assert evidence.reconciliation == []
-    assert evidence.unexplained_residual is None
+
+    impacts = {item.cause.split(":")[0]: item.dollar_impact for item in evidence.reconciliation}
+    assert impacts == {"date_field": -1200.0, "excluded_statuses": 1150.0}
+    assert evidence.unexplained_residual == 0.0
+
+    # The wrapper's non-escalated path returns the same real InvestigationEvidence.
+    entry = next(e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_revenue_recognition")
+    via_wrapper = assemble_investigation_evidence_for_benchmark(entry)
+    assert isinstance(via_wrapper, InvestigationEvidence)
+    assert not isinstance(via_wrapper, PartialInvestigationEvidence)
 
 
 def test_technical_scenario_3plus_causes_still_raises_through_wrapper():
     """The single most important behavior: a technical (is_ambiguous=False)
     scenario whose genuine 3+-cause failure fires must re-raise unchanged
-    through the wrapper, not get silently swallowed. None of the 11
-    existing Case 1-11 fixtures naturally reaches 3 remaining causes
-    (checked directly, not assumed), so this reuses
-    AMBIGUOUS_REVENUE_RECOGNITION's own real 3-cause scenario under a
-    synthetic is_ambiguous=False entry -- the same underlying failure,
-    the opposite ambiguity flag."""
+    through the wrapper, not get silently swallowed. Build 3, Day 2, Part
+    15 update: this can no longer reuse AMBIGUOUS_REVENUE_RECOGNITION's
+    scenario, since decision 22's suppression extension reduces it to 2
+    causes now (see the test above) -- a fresh synthetic 3-cause scenario
+    is constructed directly instead (join_type + date_field +
+    excluded_statuses, no filter/excluded_statuses collision involved at
+    all, so decision 22 does not affect it), mirroring
+    tests/test_investigation_evidence.py's own
+    test_raises_on_more_than_two_remaining_causes construction."""
+    source_a = DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(o.amount) AS revenue FROM orders o "
+            "LEFT JOIN customers c ON o.customer_id = c.customer_id "
+            "WHERE o.order_date >= '2024-01-01' AND o.status != 'cancelled'"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="order_date", excluded_statuses=["cancelled"], aggregation="sum"
+        ),
+    )
+    source_b = DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(o.amount) AS revenue FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.customer_id "
+            "WHERE o.created_at >= '2024-01-01' AND o.status NOT IN ('cancelled', 'refunded')"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="created_at", excluded_statuses=["cancelled", "refunded"], aggregation="sum"
+        ),
+    )
+    assert check_self_consistency(source_a, "a") == []
+    assert check_self_consistency(source_b, "b") == []
+
+    synthetic_scenario = Scenario(
+        scenario_id="synthetic_three_cause_for_wrapper_test",
+        description="Synthetic: 3 simultaneously surviving causes, unaffected by decision 22 (no filter/excluded_statuses collision).",
+        source_a=source_a,
+        source_b=source_b,
+        reported_value_a=1000.0,
+        reported_value_b=500.0,
+        known_gap=500.0,
+        seed_table="nonexistent_seed_table",  # never reached: the raise fires before any SQL execution
+    )
     synthetic_technical_entry = BenchmarkEntry(
-        scenario=AMBIGUOUS_REVENUE_RECOGNITION,
+        scenario=synthetic_scenario,
         ground_truth_check_field="reconciliation",
         is_ambiguous=False,
         expected_behavior="answer",
@@ -71,7 +122,7 @@ def test_technical_scenario_3plus_causes_still_raises_through_wrapper():
 
     # Confirm it's the exact same failure assemble_investigation_evidence itself raises.
     with pytest.raises(ValueError, match="remaining cross-source causes for scenario"):
-        assemble_investigation_evidence(AMBIGUOUS_REVENUE_RECOGNITION)
+        assemble_investigation_evidence(synthetic_scenario)
 
 
 def test_normal_path_returns_real_investigation_evidence():
@@ -141,26 +192,23 @@ def test_ambiguous_customer_counting_findings_match_reported():
     }
 
 
-def test_ambiguous_customer_counting_returns_partial_evidence_via_wrapper():
-    """Mirrors test_ambiguous_revenue_recognition_returns_partial_evidence_via_wrapper
-    above: confirm assemble_investigation_evidence_for_benchmark raises the
-    same 3+-cause condition internally (decision 18's confidence="medium"/
-    "high" filter/excluded_statuses gap, not suppressed at high confidence)
-    and returns a PartialInvestigationEvidence, not an InvestigationEvidence,
-    with reconciliation=[], unexplained_residual=None, and the same
-    post-suppression finding shape reported in chat: definition_differences
-    keeps both fields, sql_differences keeps only 'filter' (its 'date_field'
-    finding is suppressed in favor of the definitional one, decision 12)."""
-    entry = next(
-        e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_customer_counting"
-    )
-    assert entry.is_ambiguous is True
-    assert entry.expected_behavior == "escalate"
+def test_ambiguous_customer_counting_now_completes_directly_no_wrapper_needed():
+    """Build 3, Day 2, Part 15 (decision 22) superseded this test's own
+    original premise, same as AMBIGUOUS_REVENUE_RECOGNITION above: the
+    filter/excluded_statuses collision here is confidence='high', now
+    suppressed (filter removed, excluded_statuses survives), reducing 3
+    remaining causes to 2 -- this scenario completes through
+    assemble_investigation_evidence DIRECTLY, returning a real
+    InvestigationEvidence. Real, execution-verified figures, live-checked
+    before this test was written: date_field=-0.0, excluded_statuses=
+    +100.0, unexplained_residual=50.0 -- NOT 0.0, the first scenario in
+    this project's ambiguous set whose full reconciliation math has ever
+    actually been computed, and it does not fully close. Reported
+    honestly, not force-fit to a clean number."""
+    evidence = assemble_investigation_evidence(AMBIGUOUS_CUSTOMER_COUNTING)
 
-    evidence = assemble_investigation_evidence_for_benchmark(entry)
-
-    assert isinstance(evidence, PartialInvestigationEvidence)
-    assert not isinstance(evidence, InvestigationEvidence)
+    assert isinstance(evidence, InvestigationEvidence)
+    assert evidence.sql_differences == []
 
     fields = {d.field: (d.source_a_value, d.source_b_value) for d in evidence.definition_differences}
     assert fields == {
@@ -168,9 +216,15 @@ def test_ambiguous_customer_counting_returns_partial_evidence_via_wrapper():
         "excluded_statuses": ("(none)", "churned"),
     }
     assert all(d.source == "declared" and d.confidence == "high" for d in evidence.definition_differences)
-    assert [d.category for d in evidence.sql_differences] == ["filter"]
-    assert evidence.reconciliation == []
-    assert evidence.unexplained_residual is None
+
+    impacts = {item.cause.split(":")[0]: item.dollar_impact for item in evidence.reconciliation}
+    assert impacts == {"date_field": -0.0, "excluded_statuses": 100.0}
+    assert evidence.unexplained_residual == 50.0
+
+    entry = next(e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_customer_counting")
+    via_wrapper = assemble_investigation_evidence_for_benchmark(entry)
+    assert isinstance(via_wrapper, InvestigationEvidence)
+    assert not isinstance(via_wrapper, PartialInvestigationEvidence)
 
 
 def test_ambiguous_attribution_reported_values_match_seed_execution():
@@ -205,23 +259,19 @@ def test_ambiguous_attribution_findings_match_reported():
     }
 
 
-def test_ambiguous_attribution_returns_partial_evidence_via_wrapper():
-    """Mirrors test_ambiguous_revenue_recognition_returns_partial_evidence_via_wrapper
-    above: confirm assemble_investigation_evidence_for_benchmark raises the
-    same 3+-cause condition internally and returns a
-    PartialInvestigationEvidence, not an InvestigationEvidence, with
-    reconciliation=[], unexplained_residual=None, and the same
-    post-suppression finding shape reported in chat."""
-    entry = next(
-        e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_attribution"
-    )
-    assert entry.is_ambiguous is True
-    assert entry.expected_behavior == "escalate"
+def test_ambiguous_attribution_now_completes_directly_no_wrapper_needed():
+    """Build 3, Day 2, Part 15 (decision 22) superseded this test's own
+    original premise, same as AMBIGUOUS_REVENUE_RECOGNITION/CUSTOMER_COUNTING
+    above: the filter/excluded_statuses collision here is confidence='high',
+    now suppressed, reducing 3 remaining causes to 2 -- this scenario
+    completes through assemble_investigation_evidence DIRECTLY, returning
+    a real InvestigationEvidence. Real, execution-verified figures,
+    live-checked before this test was written: date_field=-11500.0,
+    excluded_statuses=+11000.0, unexplained_residual=0.0."""
+    evidence = assemble_investigation_evidence(AMBIGUOUS_ATTRIBUTION)
 
-    evidence = assemble_investigation_evidence_for_benchmark(entry)
-
-    assert isinstance(evidence, PartialInvestigationEvidence)
-    assert not isinstance(evidence, InvestigationEvidence)
+    assert isinstance(evidence, InvestigationEvidence)
+    assert evidence.sql_differences == []
 
     fields = {d.field: (d.source_a_value, d.source_b_value) for d in evidence.definition_differences}
     assert fields == {
@@ -229,9 +279,15 @@ def test_ambiguous_attribution_returns_partial_evidence_via_wrapper():
         "excluded_statuses": ("(none)", "lost, open"),
     }
     assert all(d.source == "declared" and d.confidence == "high" for d in evidence.definition_differences)
-    assert [d.category for d in evidence.sql_differences] == ["filter"]
-    assert evidence.reconciliation == []
-    assert evidence.unexplained_residual is None
+
+    impacts = {item.cause.split(":")[0]: item.dollar_impact for item in evidence.reconciliation}
+    assert impacts == {"date_field": -11500.0, "excluded_statuses": 11000.0}
+    assert evidence.unexplained_residual == 0.0
+
+    entry = next(e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_attribution")
+    via_wrapper = assemble_investigation_evidence_for_benchmark(entry)
+    assert isinstance(via_wrapper, InvestigationEvidence)
+    assert not isinstance(via_wrapper, PartialInvestigationEvidence)
 
 
 # --- Build 3, Day 2, Part 9: committed coverage for AMBIGUOUS_CURRENCY_TIMING,
@@ -386,6 +442,81 @@ def test_ambiguous_refund_timing_benchmark_entry_is_escalate_not_answer():
     shape confirmed above."""
     entry = next(
         e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_refund_timing"
+    )
+    assert entry.is_ambiguous is True
+    assert entry.expected_behavior == "escalate"
+    assert entry.ground_truth_check_field == "reconciliation"
+
+
+# --- Build 3, Day 2, Part 15: committed coverage for
+# AMBIGUOUS_ACTIVE_USER_CONVENTION (decision 22) -- drafted Part 12,
+# blocked there and in Part 14, authored here once decision 22's
+# confidence-gate extension unblocked it. Live-verified before writing
+# these tests, same discipline as every prior scenario.
+
+
+def test_ambiguous_active_user_convention_reported_values_match_seed_execution():
+    """Confirm the fixture's committed reported_value_a/b/known_gap
+    (550.0/400.0/150.0, computed via real DuckDB execution during Build 3
+    Day 2 Part 15's authoring) are exactly what's on the Scenario object."""
+    assert AMBIGUOUS_ACTIVE_USER_CONVENTION.reported_value_a == 550.0
+    assert AMBIGUOUS_ACTIVE_USER_CONVENTION.reported_value_b == 400.0
+    assert AMBIGUOUS_ACTIVE_USER_CONVENTION.known_gap == 150.0
+
+
+def test_ambiguous_active_user_convention_findings_match_reported():
+    """Confirm diff_sql and diff_definitions, run directly against the
+    fixture's real sources, produce exactly the findings this scenario
+    was designed around: one SQLStructuralDifference (filter, since
+    source_b filters on 'status' and source_a does not) and exactly one
+    DefinitionDifference (excluded_statuses, declared/high-confidence) --
+    no date_field or aggregation difference on either side, by deliberate
+    standalone-excluded_statuses design."""
+    source_a = AMBIGUOUS_ACTIVE_USER_CONVENTION.source_a
+    source_b = AMBIGUOUS_ACTIVE_USER_CONVENTION.source_b
+
+    sql_differences = diff_sql(parse_sql(source_a.sql), parse_sql(source_b.sql))
+    assert [d.category for d in sql_differences] == ["filter"]
+
+    definition_differences = diff_definitions(source_a, source_b)
+    fields = {
+        d.field: (d.source_a_value, d.source_b_value, d.source, d.confidence)
+        for d in definition_differences
+    }
+    assert fields == {
+        "excluded_statuses": ("(none)", "suspended", "declared", "high"),
+    }
+
+
+def test_ambiguous_active_user_convention_completes_through_normal_pipeline_single_line_item():
+    """Decision 22's real effect: the raw filter/excluded_statuses
+    collision (confidence='high') is suppressed down to a single
+    surviving cause (excluded_statuses), routed through the SINGLE-CAUSE
+    branch, not Shapley pairing -- confirms assemble_investigation_evidence
+    completes normally (no wrapper needed) with exactly one
+    ReconciliationLineItem whose dollar_impact matches known_gap exactly,
+    leaving unexplained_residual at 0.0."""
+    evidence = assemble_investigation_evidence(AMBIGUOUS_ACTIVE_USER_CONVENTION)
+
+    assert isinstance(evidence, InvestigationEvidence)
+    assert evidence.sql_differences == []
+    assert len(evidence.definition_differences) == 1
+    assert evidence.definition_differences[0].field == "excluded_statuses"
+    assert evidence.self_consistency_issues == []
+
+    assert len(evidence.reconciliation) == 1
+    assert evidence.reconciliation[0].dollar_impact == AMBIGUOUS_ACTIVE_USER_CONVENTION.known_gap == 150.0
+    assert evidence.reconciliation[0].computed_by == "single_cause_attribution"
+    assert evidence.unexplained_residual == 0.0
+
+
+def test_ambiguous_active_user_convention_benchmark_entry_is_escalate_not_answer():
+    """Even with a single, clean, fully-reconciled cause, the correct
+    system behavior is still to escalate, not silently pick a side. The
+    BenchmarkEntry must still reflect that, matching the live evidence
+    shape confirmed above."""
+    entry = next(
+        e for e in BENCHMARK_ENTRIES if e.scenario.scenario_id == "ambiguous_active_user_convention"
     )
     assert entry.is_ambiguous is True
     assert entry.expected_behavior == "escalate"

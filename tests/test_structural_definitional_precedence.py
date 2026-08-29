@@ -203,17 +203,23 @@ def test_case_13_filter_suppresses_low_confidence_excluded_statuses():
 
 
 @pytest.mark.parametrize("confidence", ["medium", "high"])
-def test_does_not_over_fire_on_medium_or_high_confidence_excluded_statuses(confidence):
-    """Required over-fire proof, same standard decisions 10/12 were each
-    held to: a filter finding and an excluded_statuses finding on the same
-    column, but excluded_statuses is NOT confidence="low" (a real,
-    non-empty exclusion set the inference or declaration is genuinely
-    confident about) -- suppression must not fire. This is the test that
-    proves the confidence gate actually gates, not just that Case 13's
-    happy path works. Deliberately constructed directly (not run through
-    diff_definitions) since neither declared-vs-declared nor the inferred
-    path naturally produces medium/high confidence paired with an
-    unfiltered other side the way this rule needs to be stress-tested."""
+def test_medium_or_high_confidence_excluded_statuses_now_suppresses_filter_instead(confidence):
+    """Build 3, Day 2, Part 15, decision 22: the confidence gate that
+    previously made medium/high confidence a no-op (both findings
+    survive, Build 3 Day 1 Part 6's original scope boundary) is REMOVED.
+    A filter finding and an excluded_statuses finding on the same column,
+    at confidence="medium"/"high" (a real, non-empty exclusion set the
+    inference or declaration is genuinely confident about), now suppress
+    in the OPPOSITE direction from the low-confidence case: the
+    DefinitionDifference survives, the SQLStructuralDifference is
+    removed. This is the direct, real-collision-motivated fix for the
+    Build 3 Day 2 Part 14 finding (decision 21) that this exact pairing,
+    left unsuppressed, crashes the Shapley-pair engine outright.
+    Deliberately constructed directly (not run through diff_definitions),
+    same reasoning as before this rename: neither declared-vs-declared
+    nor the inferred path naturally produces medium/high confidence
+    paired with an unfiltered other side the way this rule needs to be
+    stress-tested in isolation."""
     filter_finding = SQLStructuralDifference(
         category="filter",
         description="source_a filters on 'status', source_b's query has no equivalent filter on 'status'",
@@ -232,7 +238,7 @@ def test_does_not_over_fire_on_medium_or_high_confidence_excluded_statuses(confi
         [filter_finding], [excluded_statuses_finding]
     )
 
-    assert sql_after == [filter_finding]
+    assert sql_after == []
     assert def_after == [excluded_statuses_finding]
 
 
@@ -255,6 +261,36 @@ def test_does_not_over_fire_on_unrelated_filter_column():
         source_b_value="(none)",
         source="inferred",
         confidence="low",
+    )
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(
+        [unrelated_filter_finding], [excluded_statuses_finding]
+    )
+
+    assert sql_after == [unrelated_filter_finding]
+    assert def_after == [excluded_statuses_finding]
+
+
+@pytest.mark.parametrize("confidence", ["medium", "high"])
+def test_does_not_over_fire_on_unrelated_filter_column_at_medium_or_high_confidence(confidence):
+    """Same over-fire proof as directly above, but at the confidence
+    levels Part 15 newly suppresses in the OPPOSITE direction -- the
+    "same fact" column-identity check must still correctly refuse to
+    match an unrelated column regardless of which direction confidence
+    would otherwise route the suppression, proving the confidence-gate
+    removal (decision 22) did not loosen the column check itself."""
+    unrelated_filter_finding = SQLStructuralDifference(
+        category="filter",
+        description="source_a filters on 'region', source_b's query has no equivalent filter on 'region'",
+        query_a_snippet="region = 'us'",
+        query_b_snippet="(no filter on this column)",
+    )
+    excluded_statuses_finding = DefinitionDifference(
+        field="excluded_statuses",
+        source_a_value="churned",
+        source_b_value="(none)",
+        source="declared" if confidence == "high" else "inferred",
+        confidence=confidence,
     )
 
     sql_after, def_after = assemble_structural_and_definitional_evidence(

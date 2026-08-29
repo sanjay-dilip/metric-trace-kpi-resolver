@@ -376,3 +376,78 @@ AMBIGUOUS_CURRENCY_TIMING = Scenario(
     known_gap=4100.0 - 6300.0,
     seed_table="ambiguous_currency_timing",
 )
+
+# Active-user convention -- suspended accounts (drafted Build 3, Day 2,
+# Part 12, blocked there and in Part 14 by two separate code gaps,
+# authored here once Build 3, Day 2, Part 15's decision 22 unblocked it).
+# Two legitimate conventions exist for "how many active users we have."
+# Source A's infrastructure/capacity-planning team counts every account
+# regardless of status, including suspended ones (still-provisioned
+# convention) -- a suspended account still occupies a licensed seat and
+# consumes provisioned resources (storage, backups, standing
+# infrastructure capacity), so it belongs in any number meant to answer
+# "how much capacity do we need to keep provisioned." Source B's
+# engagement/health team instead excludes suspended accounts entirely
+# (currently-engaged convention) -- a suspended account isn't actively
+# using the product, and including it would inflate a metric meant to
+# reflect live, current usage, corrupting engagement-rate and
+# health-score calculations that assume every counted account is a real,
+# active user. Neither team is wrong; infrastructure capacity and live
+# product engagement are legitimately different questions about the same
+# underlying accounts. Deliberately a SINGLE-declared-field shape (only
+# excluded_statuses differs; date_field and aggregation are identical on
+# both sides) -- the first ambiguous scenario in this project's set to
+# test excluded_statuses standalone, without a co-occurring date_field
+# difference. This is what surfaced, live rather than hypothetically, the
+# real confidence="high" filter/excluded_statuses collision decision 22
+# resolves: raw sql_diff/definition_diff produce 2 findings (a `filter`
+# SQLStructuralDifference and an `excluded_statuses` DefinitionDifference,
+# both tracing to the same status column) that, before decision 22,
+# BOTH survived suppression and reached the Shapley-pair branch, which
+# crashed constructing the joint counterfactual (Part 14). Decision 22
+# now suppresses the redundant `filter` finding at this confidence level,
+# leaving exactly ONE remaining cause -- routed through the ordinary
+# single-cause branch, not Shapley pairing at all, confirmed by execution:
+# reconciliation is a single line item (dollar_impact=150.0, matching
+# known_gap exactly), unexplained_residual=0.0.
+AMBIGUOUS_ACTIVE_USER_CONVENTION = Scenario(
+    scenario_id="ambiguous_active_user_convention",
+    description=(
+        "Ambiguous business-rule scenario: source_a counts every account "
+        "regardless of status, including suspended ones (still-"
+        "provisioned/capacity-planning convention), source_b excludes "
+        "suspended accounts entirely (currently-engaged/health convention) "
+        "-- both declared, both defensible, no single correct answer to "
+        "unilaterally pick."
+    ),
+    source_a=DashboardSource(
+        label="capacity_planning_view",
+        sql=(
+            "SELECT COUNT(account_id) AS active_users FROM accounts "
+            "WHERE signup_date <= '2024-06-01'"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="signup_date",
+            excluded_statuses=[],
+            aggregation="count",
+        ),
+    ),
+    source_b=DashboardSource(
+        label="engagement_health_view",
+        sql=(
+            "SELECT COUNT(account_id) AS active_users FROM accounts "
+            "WHERE signup_date <= '2024-06-01' AND status != 'suspended'"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="signup_date",
+            excluded_statuses=["suspended"],
+            aggregation="count",
+        ),
+    ),
+    # Calibrated to real execution (scripts/build_seed_data.py,
+    # AMBIGUOUS_ACTIVE_USER_CONVENTION_ACCOUNTS), per decision 13's convention.
+    reported_value_a=550.0,
+    reported_value_b=400.0,
+    known_gap=550.0 - 400.0,
+    seed_table="ambiguous_active_user_convention",
+)
