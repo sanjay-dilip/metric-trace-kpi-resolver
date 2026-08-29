@@ -147,29 +147,78 @@ def _remove_predicate(where: exp.Where, leaf: exp.Expression) -> None:
         where.pop()
 
 
+_EXCLUDED_STATUSES_COLUMN = "status"
+"""The bare column name apply_excluded_statuses_correction's zero-predicate
+ADD case builds a new predicate on. Matches src.definition_diff's own
+hardcoded assumption (_status_filter_texts/_infer_excluded_statuses always
+look for a bare 'status' column; already noted as a standing assumption in
+src.self_consistency._same_filter_exclusion_fact's own docstring) -- not a
+new assumption introduced here, just the first place it needs to be
+written down explicitly rather than only ever read back off an existing
+predicate."""
+
+
+def _build_excluded_statuses_predicate(column_sql: str, statuses: list[str]) -> exp.Expression:
+    """Build a NEQ (single status) or NOT IN (multiple statuses) exclusion
+    predicate node for `column_sql`, excluding exactly `statuses`. Shared
+    by both apply_excluded_statuses_correction's rewrite-existing path and
+    its zero-predicate ADD path (Build 3, Day 2, Part 14) -- the same
+    predicate-shape decision, not two independent implementations."""
+    excluded = sorted(set(statuses))
+    if len(excluded) == 1:
+        return exp.NEQ(this=exp.to_column(column_sql), expression=exp.Literal.string(excluded[0]))
+    return exp.Not(
+        this=exp.In(this=exp.to_column(column_sql), expressions=[exp.Literal.string(v) for v in excluded])
+    )
+
+
 def apply_excluded_statuses_correction(sql: str, target_statuses: list[str]) -> str:
     """Rewrite the status-exclusion filter to exclude exactly `target_statuses`,
-    or remove the exclusion filter entirely when `target_statuses` is empty
+    remove the exclusion filter entirely when `target_statuses` is empty
     (Build 3, Day 1, Part 5, locked design decision: "corrected toward zero
     exclusions" means no exclusion clause on that column at all, not an
-    empty `NOT IN ()`).
+    empty `NOT IN ()`), or ADD a brand-new exclusion predicate when `sql`
+    has no status predicate at all yet (Build 3, Day 2, Part 14 -- mirrors
+    apply_filter_correction's proven ADD-direction pattern exactly, same
+    session's own precedent: correcting a side missing something toward a
+    real target, not rewriting or removing an existing one).
 
-    Requires exactly one WHERE predicate that references a bare 'status'
-    column, in a recognized exclusion shape (NOT IN or !=) -- same
-    recognized shapes as src.definition_diff's inference -- REGARDLESS of
-    whether `target_statuses` is empty or populated: removing a filter
+    Zero-predicate case (Part 14, new): when `sql` has no WHERE clause at
+    all, or a WHERE clause with zero predicates referencing the bare
+    'status' column, and `target_statuses` is non-empty, a new NOT IN
+    (Xs)/!= predicate (via _build_excluded_statuses_predicate, shared with
+    the rewrite path below) is added via sqlglot's own `.where()` builder
+    (AND-appends to an existing WHERE, or creates one from scratch --
+    verified directly in apply_filter_correction, Part 13). When `sql` has
+    zero status predicates AND `target_statuses` is ALSO empty, this is
+    already-correct-toward-zero -- a no-op, `sql` returned unchanged, not
+    an error (this shape should not arise from a real diff_definitions
+    comparison, since both sides would already match with zero
+    exclusions, but is handled explicitly rather than left to the
+    populated-predicate branch below to mishandle).
+
+    Populated-predicate case (existing, UNCHANGED by Part 14): requires
+    exactly one WHERE predicate that references the bare 'status' column,
+    in a recognized exclusion shape (NOT IN or !=) -- same recognized
+    shapes as src.definition_diff's inference -- REGARDLESS of whether
+    `target_statuses` is empty or populated: removing/rewriting a filter
     mechanically still requires being sure exactly one recognized
-    status-exclusion predicate exists to remove, the same certainty
-    rewriting one to a new value requires. Zero or multiple status
-    predicates, or an unrecognized shape (e.g. status = 'active'), raise
-    rather than guessing which filter to touch or how, in either case.
+    status-exclusion predicate exists to touch. Multiple status
+    predicates, or an unrecognized shape (e.g. status = 'active'), still
+    raise rather than guessing which filter to touch or how -- that
+    discipline is untouched; only the previously-unconditional zero-case
+    raise is now a distinct, valid branch.
     """
     tree = sqlglot.parse_one(sql)
     where = tree.find(exp.Where)
-    if where is None:
-        raise ValueError("apply_excluded_statuses_correction found no WHERE clause to correct a status filter in.")
+    leaves = _status_predicate_leaves(where.this) if where is not None else []
 
-    leaves = _status_predicate_leaves(where.this)
+    if not leaves:
+        if not target_statuses:
+            return tree.sql()
+        new_predicate = _build_excluded_statuses_predicate(_EXCLUDED_STATUSES_COLUMN, target_statuses)
+        return tree.where(new_predicate.sql()).sql()
+
     if len(leaves) != 1:
         raise ValueError(
             f"apply_excluded_statuses_correction requires exactly one status-filter "
@@ -192,13 +241,7 @@ def apply_excluded_statuses_correction(sql: str, target_statuses: list[str]) -> 
         raise ValueError("apply_excluded_statuses_correction could not find a status column in the matched predicate.")
     column_sql = column_node.sql()
 
-    excluded = sorted(set(target_statuses))
-    if len(excluded) == 1:
-        new_node: exp.Expression = exp.NEQ(this=exp.to_column(column_sql), expression=exp.Literal.string(excluded[0]))
-    else:
-        new_node = exp.Not(
-            this=exp.In(this=exp.to_column(column_sql), expressions=[exp.Literal.string(v) for v in excluded])
-        )
+    new_node = _build_excluded_statuses_predicate(column_sql, target_statuses)
     leaf.replace(new_node)
     return tree.sql()
 
