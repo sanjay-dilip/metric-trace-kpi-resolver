@@ -520,6 +520,40 @@ AMBIGUOUS_CURRENCY_TIMING_TRANSACTIONS = [
     (6, 500.0, "2023-11-15", "2023-12-28"),   # both before cutoff -- counts neither way
 ]
 
+# --- Ambiguous scenario, Active-user convention -- suspended accounts
+# (Build 3, Day 2, Part 12 draft, authored Part 15 once decision 22
+# unblocked it). Both sides declare a real definition, differing ONLY in
+# excluded_statuses (source_a=[], source_b=['suspended']) -- deliberately
+# a standalone single-declared-field shape (no date_field difference at
+# all, same date_field/aggregation on both sides), the first ambiguous
+# scenario in this project to test excluded_statuses in isolation rather
+# than paired with a date_field difference. Generated rather than
+# hand-typed (mirrors Case 2's/customer-counting's own recalibration), so
+# the resulting counts land at benchmark scale. See
+# tests/fixtures/ambiguous_scenarios.py for the full narrative
+# justification and the Scenario definition itself. ---
+def _build_accounts_table(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
+    con.execute(
+        "CREATE OR REPLACE TABLE accounts "
+        "(account_id INTEGER, status VARCHAR, signup_date DATE)"
+    )
+    con.executemany("INSERT INTO accounts VALUES (?, ?, ?)", rows)
+
+
+def _generate_ambiguous_active_user_convention_accounts() -> list[tuple[int, str, str]]:
+    rows: list[tuple[int, str, str]] = []
+    next_id = 1
+    for _ in range(400):  # active, still-provisioned AND currently-engaged -- counted both ways
+        rows.append((next_id, "active", "2024-01-15"))
+        next_id += 1
+    for _ in range(150):  # suspended -- still occupies a provisioned seat, but not currently engaged
+        rows.append((next_id, "suspended", "2024-02-01"))
+        next_id += 1
+    return rows
+
+
+AMBIGUOUS_ACTIVE_USER_CONVENTION_ACCOUNTS = _generate_ambiguous_active_user_convention_accounts()
+
 
 def _seed_file(seed_table: str, side: str, *table_builds: tuple) -> Path:
     """Create (or replace) one seed file at DATA_SAMPLE_DIR/{seed_table}_{side}.duckdb,
@@ -619,6 +653,10 @@ def build_all() -> None:
         _seed_file(
             "ambiguous_currency_timing", side,
             (_build_fx_transactions_table, AMBIGUOUS_CURRENCY_TIMING_TRANSACTIONS),
+        )
+        _seed_file(
+            "ambiguous_active_user_convention", side,
+            (_build_accounts_table, AMBIGUOUS_ACTIVE_USER_CONVENTION_ACCOUNTS),
         )
 
 
