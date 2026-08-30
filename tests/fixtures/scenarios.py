@@ -590,6 +590,117 @@ CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION = Scenario(
     seed_table="case_13_filter_excluded_statuses_collision",
 )
 
+# Case 14: finalized 8-scenario technical-benchmark list, item 6 (Build 3,
+# Day 3, Part 6 -- CONTEXT.md). date_field + excluded_statuses, two-cause,
+# excluded_statuses at LOW confidence (inferred) -- every other committed
+# 2-cause excluded_statuses pair in this project (Case 2, Case 3, the three
+# AMBIGUOUS_* two-cause scenarios) uses a declared, high-confidence
+# excluded_statuses side; this is the first to exercise the Shapley-pair/
+# correction machinery when one member of a genuinely interacting pair is
+# low-confidence/inferred instead of declared.
+#
+# BOTH SIDES FILTER THE STATUS COLUMN, deliberately -- source_a via a real
+# NOT IN exclusion ("status NOT IN ('churned')"), source_b via an
+# inclusion-style predicate ("status = 'active'") that
+# src.definition_diff._infer_excluded_statuses does not recognize as an
+# exclusion shape (Day 3's own documented low-confidence branch), forcing
+# low confidence. This is the OPPOSITE construction from Case 13's own
+# "one side filters, the other doesn't" shape: Case 13 tried "both sides
+# filter status, different values" first and confirmed by execution that
+# src.sql_diff._diff_filters (presence-only) never produces a `filter`
+# finding when both sides already filter the same column -- exactly the
+# property this fixture depends on to stay clear of decisions 18/22's
+# filter/excluded_statuses suppression rule entirely (that rule only ever
+# has something to fire against when a real `filter` SQLStructuralDifference
+# exists in the first place). Confirmed live for this exact fixture, not
+# assumed to transfer from Case 13: sql_differences contains no `filter`
+# category at any point in the pipeline.
+#
+# source_a's declared_definition is faithfully implemented by source_a.sql
+# (no self-consistency issue); source_b has no declared_definition at all
+# (hybrid fallback), so date_field and excluded_statuses both route through
+# infer_definition_from_sql for source_b. date_field lands at confidence
+# "medium" overall (min(high, medium) -- source_b's SQL has exactly one
+# clear date-like column, created_at) -- decision 12's own precedence rule
+# has only ever been proven at this confidence level, so this fixture
+# stays within already-proven territory for that suppression, not a new
+# confidence case. source_a's declared aggregation ("sum") matches
+# source_b's inferred aggregation exactly (both SUM(amount)), so aggregation
+# never differs -- remaining_causes is exactly 2 (date_field, excluded_statuses)
+# after decision 12 suppresses the redundant sql_diff date_field finding,
+# confirmed live.
+#
+# reported_value_a (950.0), reported_value_b (500.0), and known_gap (450.0)
+# are real execution figures against this fixture's own seed data, per
+# decision 13's calibration convention.
+#
+# A REAL, PREVIOUSLY-UNDOCUMENTED FINDING, confirmed live rather than
+# assumed (decision 27, docs/decisions.md): assemble_investigation_evidence
+# runs to completion on this fixture with NO exception -- proving the
+# Shapley-pair/correction machinery does execute successfully with a
+# low-confidence/inferred member, which was this fixture's whole design
+# purpose -- but unexplained_residual is 650.0, NOT 0.0, even though this
+# is a clean, fully-covered two-cause fixture with no data-quality/freshness
+# cause and no third interacting cause. Root cause: correcting
+# excluded_statuses toward source_b's inferred value ("(none)", the fixed
+# placeholder src.definition_diff._infer_excluded_statuses returns for
+# EVERY low-confidence case, decision-20/21's zero-exclusion convention)
+# means "remove A's exclusion filter entirely" -- structurally different
+# from what source_b's SQL actually does (an inclusion filter, "only
+# active"), which this project's schema has no vocabulary to represent as
+# a target for correction. See decision 27 for the full reasoning and the
+# real dollar-impact breakdown.
+#
+# EXCLUSION REASON, stated explicitly per this session's own requirement:
+# NOT added to SCENARIOS. This is not a crash and not a double-counting
+# risk (like Cases 12/13) -- the pipeline completes and returns a real,
+# non-crashing InvestigationEvidence -- but its unexplained_residual is
+# large and genuinely misleading if read as "a small amount of gap
+# couldn't be explained": 650.0 against a known_gap of only 450.0. Adding
+# it to SCENARIOS today would put a fixture with a wrong-looking residual
+# into every full-SCENARIOS residual sweep with no caveat attached, the
+# same kind of silent misread Cases 8-11's own SCENARIOS entry explicitly
+# warns against for a different reason. Stays excluded until a future
+# session decides how to represent this honestly (documenting the
+# residual as an accepted, structural consequence of low-confidence
+# inference and adding it anyway, or resolving the underlying inclusion-
+# vs-exclusion representation gap first) -- not resolved here.
+CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES = Scenario(
+    scenario_id="case_14_date_field_low_confidence_excluded_statuses",
+    description=(
+        "date_field + excluded_statuses, two-cause: source_b has no "
+        "declared definition, and its inclusion-style status filter "
+        "('status = 'active'') is not a recognized exclusion shape, "
+        "forcing a low-confidence excluded_statuses inference. Both "
+        "sides filter the status column, deliberately, so no sql_diff "
+        "`filter` finding is ever produced."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE order_date >= '2024-01-01' AND status NOT IN ('churned')"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="order_date",
+            excluded_statuses=["churned"],
+            aggregation="sum",
+        ),
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE created_at >= '2024-01-01' AND status = 'active'"
+        ),
+        declared_definition=None,
+    ),
+    reported_value_a=950.0,
+    reported_value_b=500.0,
+    known_gap=950.0 - 500.0,
+    seed_table="case_14_date_field_low_confidence_excluded_statuses",
+)
+
 SCENARIOS = [
     CASE_1_JOIN_TYPE,
     CASE_2_MULTI_CAUSE,

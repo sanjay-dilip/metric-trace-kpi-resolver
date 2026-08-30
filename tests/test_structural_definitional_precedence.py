@@ -40,6 +40,7 @@ from tests.fixtures.scenarios import (
     CASE_2_MULTI_CAUSE,
     CASE_3_HYBRID_FALLBACK,
     CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION,
+    CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES,
     SCENARIOS,
 )
 
@@ -299,3 +300,45 @@ def test_does_not_over_fire_on_unrelated_filter_column_at_medium_or_high_confide
 
     assert sql_after == [unrelated_filter_finding]
     assert def_after == [excluded_statuses_finding]
+
+
+def test_case_14_both_sides_filtering_status_produces_no_filter_finding_at_all():
+    """Case 14 (Build 3, Day 3, Part 6): the deliberate opposite of Case
+    13's construction -- BOTH sides have a real status predicate
+    (source_a: NOT IN exclusion; source_b: an inclusion-style '=' the
+    inference layer doesn't recognize). src.sql_diff._diff_filters is
+    presence-only, so this must never produce a `filter`
+    SQLStructuralDifference at all -- confirmed here directly against the
+    raw sql_diff output, before any suppression rule even runs. This is
+    what keeps decisions 18/22's filter/excluded_statuses rule from ever
+    having anything to fire against for this fixture."""
+    s = CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES
+    sql_diffs = diff_sql(parse_sql(s.source_a.sql), parse_sql(s.source_b.sql))
+
+    assert "filter" not in {d.category for d in sql_diffs}
+
+
+def test_case_14_date_field_suppressed_by_decision_12_leaving_exactly_two_causes():
+    """The real collision this fixture DOES hit: source_a's declared
+    'order_date' and source_b's inferred 'created_at' (medium confidence)
+    trace to the same date-column swap sql_diff's own `date_field` finding
+    describes -- decision 12's existing suppression (already proven at
+    confidence="medium", the same level this fixture reaches) removes the
+    redundant structural finding, leaving exactly definition_differences =
+    [date_field, excluded_statuses] and sql_differences = [] -- the 2-cause
+    shape this fixture's whole design depends on to reach the Shapley-pair
+    branch rather than the 1-cause or 3+-cause ones."""
+    s = CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES
+    sql_diffs = diff_sql(parse_sql(s.source_a.sql), parse_sql(s.source_b.sql))
+    def_diffs = diff_definitions(s.source_a, s.source_b)
+
+    assert {d.category for d in sql_diffs} == {"date_field"}
+    assert [(d.field, d.confidence) for d in def_diffs] == [
+        ("date_field", "medium"),
+        ("excluded_statuses", "low"),
+    ]
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(sql_diffs, def_diffs)
+
+    assert sql_after == []
+    assert [d.field for d in def_after] == ["date_field", "excluded_statuses"]

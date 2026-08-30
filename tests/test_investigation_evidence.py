@@ -63,6 +63,7 @@ from tests.fixtures.scenarios import (
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
     CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION,
+    CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES,
     SCENARIOS,
 )
 
@@ -367,3 +368,44 @@ def test_case_13_full_pipeline_now_raises_on_filter_alone_after_suppression():
     deliberately NOT added to SCENARIOS."""
     with pytest.raises(ValueError, match="does not name a real filter predicate to add"):
         assemble_investigation_evidence(CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION)
+
+
+def test_case_14_full_pipeline_completes_with_a_real_but_large_residual():
+    """Build 3, Day 3, Part 6, decision 27 (docs/decisions.md): Case 14
+    is the first fixture in this project where one member of a genuinely
+    interacting Shapley-pair is low-confidence/inferred rather than
+    declared. This proves TWO things at once, both load-bearing for why
+    the fixture stays out of SCENARIOS rather than being treated as
+    broken:
+
+    1. The pipeline does NOT crash -- assemble_investigation_evidence
+       returns a real InvestigationEvidence, with both date_field and
+       excluded_statuses attributed via shapley_pair_attribution. This
+       was the fixture's actual design goal, and it holds.
+    2. unexplained_residual is 650.0, NOT 0.0, even though this is a
+       clean two-cause fixture with no data-quality cause and no third
+       interacting cause -- the same standard every other clean
+       technical fixture (Cases 1-4, 7) reconciles to exactly. Root
+       cause (decision 27): correcting excluded_statuses toward source_b's
+       inferred value ("(none)", the fixed placeholder returned for
+       EVERY low-confidence case) means "remove source_a's exclusion
+       filter entirely," which is not what source_b's SQL actually does
+       (an inclusion filter, "only active") -- a real, structural gap in
+       what this schema's excluded_statuses vocabulary can represent as
+       a correction target, not a bug in the Shapley/reconciliation
+       arithmetic itself (the individual line items are exactly what a
+       hand-reconstruction of the four counterfactual queries confirms)."""
+    evidence = assemble_investigation_evidence(CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES)
+
+    assert [d.field for d in evidence.definition_differences] == ["date_field", "excluded_statuses"]
+    assert evidence.sql_differences == []
+    assert [item.computed_by for item in evidence.reconciliation] == [
+        "shapley_pair_attribution",
+        "shapley_pair_attribution",
+    ]
+
+    dollar_impacts = {item.cause.split(":")[0]: item.dollar_impact for item in evidence.reconciliation}
+    assert dollar_impacts["date_field"] == 100.0
+    assert dollar_impacts["excluded_statuses"] == -300.0
+    assert evidence.unexplained_residual == 650.0
+    assert CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES not in SCENARIOS

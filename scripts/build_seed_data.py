@@ -363,6 +363,30 @@ CASE_7_ORDERS = [
 ]
 
 
+# --- Case 14 (Build 3, Day 3, Part 6 -- finalized 8-scenario list, item 6):
+# date_field + excluded_statuses, two-cause, excluded_statuses at low
+# confidence (inferred). Both sides filter the status column -- source_a via
+# a real NOT IN exclusion ("status NOT IN ('churned')"), source_b via an
+# inclusion-style predicate ("status = 'active'") that
+# src.definition_diff._infer_excluded_statuses does not recognize as an
+# exclusion shape, forcing low-confidence inference. Deliberately NOT the
+# "one side filters, the other doesn't" shape Case 13 uses -- both sides
+# having a real status predicate is what keeps src.sql_diff._diff_filters
+# (presence-only) from producing a `filter` SQLStructuralDifference at all,
+# so decisions 18/22's filter/excluded_statuses suppression rule never has
+# anything to fire against. Reuses the same orders-with-created_at schema
+# as Case 3 (_build_orders_table_with_created_at) since a second, distinct
+# date column is required for the date_field cause. ---
+CASE_14_ORDERS = [
+    (1, 100.0, "active", "2024-02-01", "2024-02-01"),
+    (2, 200.0, "trial", "2024-02-01", "2024-02-01"),      # A includes (not churned), B excludes (not active)
+    (3, 300.0, "churned", "2024-02-01", "2024-02-01"),    # both exclude
+    (4, 400.0, "active", "2023-12-15", "2024-01-05"),     # date-only overlap: A excludes (order_date), B includes (created_at)
+    (5, 500.0, "active", "2024-01-10", "2023-12-20"),     # reverse date-only overlap: A includes, B excludes
+    (6, 150.0, "cancelled", "2024-02-01", "2024-02-01"),  # A includes (not churned), B excludes (not active)
+]
+
+
 # --- Ambiguous scenario proof-of-concept, Refund timing (Build 3, Day 2,
 # Part 3). Not a Build 2 data-quality/freshness cause and not a
 # declared-vs-inferred definitional cause -- both sides declare a real
@@ -588,6 +612,10 @@ def build_all() -> None:
         _seed_file("case_04_governance_drift", side, (_build_orders_table, CASE_4_ORDERS))
         _seed_file("case_06_negative_control", side, (_build_orders_table, CASE_6_ORDERS))
         _seed_file("case_07_precedence_conflict", side, (_build_orders_table, CASE_7_ORDERS))
+        _seed_file(
+            "case_14_date_field_low_confidence_excluded_statuses", side,
+            (_build_orders_table_with_created_at, CASE_14_ORDERS),
+        )
 
     _seed_file("case_05_unexplained_residual", "a", (_build_orders_table, CASE_5_ORDERS_A))
     _seed_file("case_05_unexplained_residual", "b", (_build_orders_table, CASE_5_ORDERS_B))
