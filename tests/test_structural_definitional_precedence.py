@@ -41,6 +41,7 @@ from tests.fixtures.scenarios import (
     CASE_3_HYBRID_FALLBACK,
     CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION,
     CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES,
+    CASE_15_DATE_FIELD_INFERRED_ONLY,
     SCENARIOS,
 )
 
@@ -159,14 +160,19 @@ def test_does_not_over_fire_on_unrelated_date_field_findings():
     assert def_after == def_diffs
 
 
-def test_no_regressions_across_all_7_fixtures():
-    """Case 2 (decision 10, distinct/aggregation) and Case 3 (decision 12,
-    date_field/date_field) are the only fixtures affected by this rule;
-    every other fixture's sql_differences/definition_differences must pass
-    through unchanged."""
+def test_no_regressions_across_scenarios():
+    """Case 2 (decision 10, distinct/aggregation), Case 3 (decision 12,
+    date_field/date_field), and Case 15 (Build 3, Day 3, Part 7 -- the
+    same date_field/date_field collision as Case 3, but inferred-vs-inferred
+    rather than declared-vs-inferred) are the only fixtures in SCENARIOS
+    affected by this rule; every other fixture's sql_differences/
+    definition_differences must pass through unchanged. Renamed from
+    "..._across_all_7_fixtures": SCENARIOS has grown well past 7 since
+    this test was first written, and the old name was stale."""
     affected = {
         "case_02_multi_cause": ["distinct"],
         "case_03_hybrid_fallback": ["date_field"],
+        "case_15_date_field_inferred_only": ["date_field"],
     }
     for scenario in SCENARIOS:
         sql_diffs = diff_sql(parse_sql(scenario.source_a.sql), parse_sql(scenario.source_b.sql))
@@ -342,3 +348,27 @@ def test_case_14_date_field_suppressed_by_decision_12_leaving_exactly_two_causes
 
     assert sql_after == []
     assert [d.field for d in def_after] == ["date_field", "excluded_statuses"]
+
+
+def test_case_15_date_field_suppressed_leaving_exactly_one_cause():
+    """Case 15 (Build 3, Day 3, Part 7 -- finalized 8-scenario list, item
+    1): both sides undeclared, so date_field is inferred-vs-inferred, not
+    declared-vs-inferred like Case 3/14. Neither side filters status or
+    diverges on aggregation, so excluded_statuses/aggregation never
+    differ -- date_field is the ONLY raw definitional finding, and its
+    sql_diff structural counterpart (same order_date/ship_date swap) is
+    suppressed by decision 12 at the same already-proven confidence="medium"
+    level Case 3/14 exercise. This is what keeps Case 15 a genuine
+    single-cause fixture (1 remaining cause -> single_cause_attribution),
+    not an accidental multi-cause one."""
+    s = CASE_15_DATE_FIELD_INFERRED_ONLY
+    sql_diffs = diff_sql(parse_sql(s.source_a.sql), parse_sql(s.source_b.sql))
+    def_diffs = diff_definitions(s.source_a, s.source_b)
+
+    assert {d.category for d in sql_diffs} == {"date_field"}
+    assert [(d.field, d.confidence, d.source) for d in def_diffs] == [("date_field", "medium", "inferred")]
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(sql_diffs, def_diffs)
+
+    assert sql_after == []
+    assert [d.field for d in def_after] == ["date_field"]
