@@ -701,6 +701,65 @@ CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES = Scenario(
     seed_table="case_14_date_field_low_confidence_excluded_statuses",
 )
 
+# Case 15: finalized 8-scenario technical-benchmark list, item 1 (Build 3,
+# Day 3, Part 7). date_field only, single-cause, INFERRED path -- NEITHER
+# side declares a metric definition (both declared_definition=None), a
+# genuinely different code shape from every prior date_field fixture:
+# Case 3 and Case 14 are both declared-vs-undeclared (one side "high"
+# confidence, weakest-link pulls the overall confidence down to the
+# undeclared side's inferred level); Case 15 is undeclared-vs-undeclared,
+# both legs routed through infer_definition_from_sql independently, and
+# the overall confidence (min of two "medium"s) is "medium" from BOTH
+# sides agreeing, not from one side dragging the other down.
+#
+# Neither side filters on status at all -- zero status predicates on
+# either side, so excluded_statuses infers the same "(none)"/low-confidence
+# value on both sides and never differs (confirmed live: no
+# DefinitionDifference for this field). Both sides aggregate via
+# SUM(amount) with no DISTINCT, so aggregation infers "sum"/medium
+# confidence identically on both sides and never differs either
+# (confirmed live). date_field is the ONLY field that differs -- source_a
+# infers "order_date" (medium), source_b infers "ship_date" (medium),
+# overall confidence "medium" (min(medium, medium)), source="inferred"
+# (neither side declared). sql_diff's own `date_field` structural finding
+# on the same order_date/ship_date swap collides with and is suppressed
+# by decision 12 (already-proven confidence="medium" case, the same level
+# this fixture reaches) -- confirmed live: sql_differences == [] after
+# suppression, leaving exactly 1 remaining cause, routed through
+# single_cause_attribution, not the Shapley-pair branch.
+#
+# reported_value_a (650.0), reported_value_b (550.0), and known_gap
+# (100.0) are real execution figures against this fixture's own seed
+# data, per decision 13's calibration convention. Confirmed live:
+# assemble_investigation_evidence reconciles to unexplained_residual=0.0
+# exactly (date_field's own dollar_impact, 100.0, equals known_gap in
+# full) -- a clean, fully-explained single-cause fixture, added directly
+# to SCENARIOS.
+CASE_15_DATE_FIELD_INFERRED_ONLY = Scenario(
+    scenario_id="case_15_date_field_inferred_only",
+    description=(
+        "date_field only, single-cause, inferred path: neither source "
+        "declares a metric definition -- source_a's SQL filters on "
+        "order_date, source_b's on ship_date, both inferred at medium "
+        "confidence, with excluded_statuses and aggregation matching "
+        "identically on both sides."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01'",
+        declared_definition=None,
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE ship_date >= '2024-01-01'",
+        declared_definition=None,
+    ),
+    reported_value_a=650.0,
+    reported_value_b=550.0,
+    known_gap=650.0 - 550.0,
+    seed_table="case_15_date_field_inferred_only",
+)
+
 SCENARIOS = [
     CASE_1_JOIN_TYPE,
     CASE_2_MULTI_CAUSE,
@@ -713,8 +772,18 @@ SCENARIOS = [
     CASE_9_MISSING_PARTITION,
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
+    CASE_15_DATE_FIELD_INFERRED_ONLY,
 ]
-"""Build 2, Day 5: Cases 8-11's exclusion trigger ("wire data_quality_issues
+"""Build 3, Day 3, Part 7: Case 15 (finalized 8-scenario list, item 1) added
+directly -- unlike Cases 8-11, it carries no exclusion-trigger caveat: it is
+a clean single-cause fixture (definition_differences=[date_field],
+sql_differences=[] after decision 12 suppression, no data_quality_issues)
+that reconciles to unexplained_residual=0.0 exactly, confirmed by real
+execution before being added, per this project's own standing discipline
+(decision 13's calibration convention; every prior addition to this list
+verified live first).
+
+Build 2, Day 5: Cases 8-11's exclusion trigger ("wire data_quality_issues
 into assemble_investigation_evidence") is now satisfied --
 _resolve_data_quality_issues (src/reconciliation_assembly.py) populates
 data_quality_issues for exactly these four scenario_ids -- so all four now
