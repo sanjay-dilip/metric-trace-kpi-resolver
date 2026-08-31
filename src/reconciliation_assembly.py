@@ -273,12 +273,27 @@ def _case_12_join_orphan_collision(
     )
 
 
+def _case_20_stale_extract_join_collision(
+    scenario: Scenario, seed_db_path_a: str, seed_db_path_b: str
+) -> DataQualityIssue | None:
+    """Build 3, Day 3, Part 9 (finalized 8-scenario list, item 7): unlike
+    Case 12, this fixture IS added to SCENARIOS and IS dispatched --
+    deliberately, per item 7's own stated purpose (the first live
+    demonstration of decision 17's legibility risk inside the actual
+    benchmark set). Mirrors _case_08_stale_extract's own shape exactly:
+    only source_a carries the freshness cause (source_b's data is always
+    complete)."""
+    complete_db_path_a = str(DATA_SAMPLE_DIR / f"{scenario.freshness_complete_seed_table}_a.duckdb")
+    return check_stale_extract(complete_db_path_a, seed_db_path_a, "orders", scenario.source_a.sql, "a")
+
+
 _DATA_QUALITY_DISPATCH: dict[str, Callable[[Scenario, str, str], DataQualityIssue | None]] = {
     "case_08_stale_extract": _case_08_stale_extract,
     "case_09_missing_partition": _case_09_missing_partition,
     "case_10_referential_integrity": _case_10_referential_integrity,
     "case_11_referential_integrity_source_b": _case_11_referential_integrity_source_b,
     "case_12_join_orphan_collision": _case_12_join_orphan_collision,
+    "case_20_stale_extract_join_collision": _case_20_stale_extract_join_collision,
 }
 """Build 2, Day 5 dispatch point (decision locked in chat, Option B): only
 ONE data-quality check is ever invoked per scenario, chosen by

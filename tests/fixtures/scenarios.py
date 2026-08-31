@@ -760,6 +760,293 @@ CASE_15_DATE_FIELD_INFERRED_ONLY = Scenario(
     seed_table="case_15_date_field_inferred_only",
 )
 
+# Case 16: finalized 8-scenario technical-benchmark list, item 2 (Build 3,
+# Day 3, Part 9). excluded_statuses only, single-cause, BOTH DECLARED, high
+# confidence. A second clean data point alongside Case 4, at a different
+# scale -- but unlike Case 4 (a self-consistency/governance-drift fixture,
+# where A's own SQL contradicts A's own declaration), this is a genuine
+# cross-source declared-vs-declared excluded_statuses diff: each side's SQL
+# faithfully implements its own declaration, so no SelfConsistencyIssue
+# fires on either side. Confirmed live: definition_differences =
+# [excluded_statuses], sql_differences = [], routed through
+# single_cause_attribution, reconciles to unexplained_residual=0.0 exactly.
+CASE_16_EXCLUDED_STATUSES_DECLARED = Scenario(
+    scenario_id="case_16_excluded_statuses_declared",
+    description=(
+        "excluded_statuses only, single-cause, both declared: source_a "
+        "excludes only 'cancelled', source_b also excludes 'refunded' -- "
+        "a clean cross-source declared diff with no self-consistency "
+        "issue on either side."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01' AND status NOT IN ('cancelled')",
+        declared_definition=DeclaredDefinition(date_field="order_date", excluded_statuses=["cancelled"], aggregation="sum"),
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE order_date >= '2024-01-01' AND status NOT IN ('cancelled', 'refunded')"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="order_date", excluded_statuses=["cancelled", "refunded"], aggregation="sum"
+        ),
+    ),
+    reported_value_a=400.0,
+    reported_value_b=100.0,
+    known_gap=400.0 - 100.0,
+    seed_table="case_16_excluded_statuses_declared",
+)
+
+# Case 17: finalized 8-scenario technical-benchmark list, item 3 (Build 3,
+# Day 3, Part 9). join_type + excluded_statuses, two-cause, INTERACTING on
+# overlapping rows -- the first structural x definitional interacting pair
+# anywhere in this project, closing decision 11's own longest-standing
+# untested scope gap (definitional-vs-structural interaction, zero
+# coverage until now). order_id=3 is the genuinely overlapping row: it
+# references a nonexistent customer (customer_id=99, dropped by source_b's
+# INNER JOIN) AND carries status='refunded' (excluded by source_b's
+# declared excluded_statuses but not source_a's) -- both mechanisms
+# independently remove this exact row from source_b's result, which is
+# what makes this a real interacting pair rather than two unrelated single
+# causes that merely coexist. Confirmed live: definition_differences =
+# [excluded_statuses], sql_differences = [join_type], routed through
+# shapley_pair_attribution (150.0/150.0 split), reconciles to
+# unexplained_residual=0.0 exactly.
+CASE_17_JOIN_TYPE_EXCLUDED_STATUSES_INTERACTING = Scenario(
+    scenario_id="case_17_join_type_excluded_statuses_interacting",
+    description=(
+        "join_type + excluded_statuses, two-cause, interacting: order_id=3 "
+        "is both an orphan FK row (dropped by source_b's INNER JOIN) and "
+        "status='refunded' (excluded only by source_b's declared "
+        "excluded_statuses) -- the same row both causes act on."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(o.amount) AS revenue FROM orders o "
+            "LEFT JOIN customers c ON o.customer_id = c.customer_id "
+            "WHERE o.order_date >= '2024-01-01' AND o.status NOT IN ('cancelled')"
+        ),
+        declared_definition=DeclaredDefinition(date_field="order_date", excluded_statuses=["cancelled"], aggregation="sum"),
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(o.amount) AS revenue FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.customer_id "
+            "WHERE o.order_date >= '2024-01-01' AND o.status NOT IN ('cancelled', 'refunded')"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="order_date", excluded_statuses=["cancelled", "refunded"], aggregation="sum"
+        ),
+    ),
+    reported_value_a=600.0,
+    reported_value_b=300.0,
+    known_gap=600.0 - 300.0,
+    seed_table="case_17_join_type_excluded_statuses_interacting",
+)
+
+# Case 18: finalized 8-scenario technical-benchmark list, item 4 (Build 3,
+# Day 3, Part 9). join_type only, single-cause, a DIFFERENT table pairing
+# from Case 1 -- support tickets referencing an assigned agent, rather than
+# orders referencing a customer -- a second real data point on the one
+# structural category with full correction support, deliberately not a
+# copy of Case 1's own orders/customers domain. Same underlying mechanism
+# as Case 1 (an orphan fact row, ticket_id=3 references agent_id=99, which
+# does not exist in agents; LEFT keeps it, INNER drops it), both sides
+# declare identically, so the only cause is structural. Confirmed live:
+# definition_differences = [], sql_differences = [join_type] (unaffected
+# by decision 10/12's suppression, since no colliding definitional finding
+# exists), routed through single_cause_attribution, reconciles to
+# unexplained_residual=0.0 exactly.
+CASE_18_JOIN_TYPE_ONLY = Scenario(
+    scenario_id="case_18_join_type_only",
+    description=(
+        "join_type only, single-cause, distinct table pairing from Case "
+        "1: a support-ticket/agent domain instead of orders/customers -- "
+        "LEFT vs INNER JOIN on an orphan ticket referencing a nonexistent "
+        "agent_id."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(t.amount) AS revenue FROM tickets t "
+            "LEFT JOIN agents a ON t.agent_id = a.agent_id "
+            "WHERE t.opened_date >= '2024-01-01' AND t.status NOT IN ('cancelled')"
+        ),
+        declared_definition=DeclaredDefinition(date_field="opened_date", excluded_statuses=["cancelled"], aggregation="sum"),
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(t.amount) AS revenue FROM tickets t "
+            "INNER JOIN agents a ON t.agent_id = a.agent_id "
+            "WHERE t.opened_date >= '2024-01-01' AND t.status NOT IN ('cancelled')"
+        ),
+        declared_definition=DeclaredDefinition(date_field="opened_date", excluded_statuses=["cancelled"], aggregation="sum"),
+    ),
+    reported_value_a=400.0,
+    reported_value_b=200.0,
+    known_gap=400.0 - 200.0,
+    seed_table="case_18_join_type_only",
+)
+
+# Case 19: finalized 8-scenario technical-benchmark list, item 5 (Build 3,
+# Day 3, Part 9). date_field + excluded_statuses, two-cause, BOTH
+# DECLARED, high confidence -- a technical mirror of
+# AMBIGUOUS_REVENUE_RECOGNITION's own shape (proving the Shapley-pair path
+# holds with no business-rule tension, just an honest bug on both
+# dimensions). Also the first fixture to exercise decision 12's
+# date_field suppression at confidence="high" via a purely technical
+# scenario (every prior committed technical proof -- Case 3, Case 14,
+# Case 15 -- was at "medium"; AMBIGUOUS_REVENUE_RECOGNITION already
+# proved "high" but as an ambiguous, not technical, scenario). Confirmed
+# live: definition_differences = [date_field, excluded_statuses],
+# sql_differences = [] (decision 12 suppression fires), routed through
+# shapley_pair_attribution (-300.0/+200.0 split), reconciles to
+# unexplained_residual=0.0 exactly.
+CASE_19_DATE_FIELD_EXCLUDED_STATUSES_DECLARED = Scenario(
+    scenario_id="case_19_date_field_excluded_statuses_declared",
+    description=(
+        "date_field + excluded_statuses, two-cause, both declared, high "
+        "confidence: source_a filters order_date and excludes only "
+        "'cancelled'; source_b filters ship_date and also excludes "
+        "'refunded' -- a technical mirror of AMBIGUOUS_REVENUE_RECOGNITION's "
+        "own two-cause shape, with no business-rule ambiguity."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01' AND status NOT IN ('cancelled')",
+        declared_definition=DeclaredDefinition(date_field="order_date", excluded_statuses=["cancelled"], aggregation="sum"),
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE ship_date >= '2024-01-01' AND status NOT IN ('cancelled', 'refunded')"
+        ),
+        declared_definition=DeclaredDefinition(
+            date_field="ship_date", excluded_statuses=["cancelled", "refunded"], aggregation="sum"
+        ),
+    ),
+    reported_value_a=300.0,
+    reported_value_b=400.0,
+    known_gap=300.0 - 400.0,
+    seed_table="case_19_date_field_excluded_statuses_declared",
+)
+
+# Case 20: finalized 8-scenario technical-benchmark list, item 7 (Build 3,
+# Day 3, Part 9). Data-quality (stale_extract) + structural (join_type)
+# collision, DELIBERATELY DISPATCHED -- the first live demonstration of
+# decision 17's legibility risk inside the actual `SCENARIOS` set (Case
+# 1's own orphan row reproduces the same risk but stays deliberately
+# undispatched; Case 12 proves an analogous collision via
+# referential_integrity but stays fully excluded from `SCENARIOS`).
+#
+# Mechanically, a stale_extract's "row missing" mechanism and join_type's
+# "orphan row present" mechanism cannot literally coincide on the
+# identical row -- a row cannot be both absent from an extract and
+# present-but-orphaned in the same snapshot -- so this fixture uses TWO
+# real, independent facts rather than forcing a contradictory single-row
+# collision: order_id=3 (customer_id=99, orphan) is present in BOTH
+# source_a's as-delivered data and source_b's data, giving join_type a
+# real, nonzero dollar_impact via reconciliation; order_id=2 (a normal,
+# non-orphan row) is MISSING from source_a's as-delivered snapshot
+# relative to the complete counterfactual, giving check_stale_extract a
+# real, nonzero dollar_impact via data_quality_issues.
+#
+# Confirmed live, not assumed: unexplained_residual (-200.0) happens to
+# equal the unfolded data_quality_issue's own dollar_impact (-200.0)
+# exactly for THIS fixture's specific numbers -- a different, arguably
+# more instructive demonstration of decision 17's point than a literal
+# same-fact double-count: a naive reader summing reconciliation's
+# join_type figure (+300.0) and the data-quality figure (-200.0) would
+# actually land on known_gap (100.0) correctly here, by construction --
+# but the pipeline's own unexplained_residual does NOT perform that
+# summation (data_quality_issues stays additive-only, Build 2 Day 5's own
+# locked decision), so a reader must not assume EITHER outcome (safe to
+# sum here vs. double-counting on Case 12) without checking
+# data_quality_issues directly. No declared definitions on either side
+# (both None) -- join_type is the only structural/definitional cause
+# present. Added to `SCENARIOS`, unlike Case 12/13/14 -- it neither
+# crashes nor silently double-counts; `unexplained_residual` here is a
+# real, honest, non-misleading number once data_quality_issues is read
+# alongside it, which is exactly the discipline decision 17 asks for.
+CASE_20_STALE_EXTRACT_JOIN_COLLISION = Scenario(
+    scenario_id="case_20_stale_extract_join_collision",
+    description=(
+        "Data-quality + structural collision, dispatched: order_id=3 is a "
+        "real orphan FK row present in both sides' actual data (a genuine "
+        "join_type cause); order_id=2 is missing from source_a's stale "
+        "extract relative to the complete counterfactual (a genuine "
+        "stale_extract cause) -- two independent, coexisting real dollar "
+        "figures in one dispatched SCENARIOS member, reproducing decision "
+        "17's legibility risk live."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(o.amount) AS revenue FROM orders o "
+            "LEFT JOIN customers c ON o.customer_id = c.customer_id "
+            "WHERE o.order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql=(
+            "SELECT SUM(o.amount) AS revenue FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.customer_id "
+            "WHERE o.order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    ),
+    reported_value_a=400.0,
+    reported_value_b=300.0,
+    known_gap=400.0 - 300.0,
+    seed_table="case_20_stale_extract_join_collision",
+    freshness_complete_seed_table="case_20_stale_extract_join_collision_complete",
+)
+
+# Case 21: finalized 8-scenario technical-benchmark list, item 8 (Build 3,
+# Day 3, Part 9). filter ADD-direction, single-cause, technical -- a plain
+# WHERE-clause presence/absence difference on a NON-status column
+# (`region`), no declared excluded_statuses on either side, exercising
+# apply_filter_correction's ADD path (decision 20) outside the ambiguous
+# set, where it has so far only been proven on AMBIGUOUS_ATTRIBUTION.
+# source_a is deliberately the side MISSING the filter -- correction
+# always runs A-toward-B, and apply_filter_correction only supports the
+# ADD direction (correcting a side missing a predicate toward the other
+# side's real one); source_b carries the real `region = 'us'` filter.
+# Confirmed live: definition_differences = [], sql_differences = [filter],
+# routed through single_cause_attribution, reconciles to
+# unexplained_residual=0.0 exactly.
+CASE_21_FILTER_ADD_DIRECTION = Scenario(
+    scenario_id="case_21_filter_add_direction",
+    description=(
+        "filter ADD-direction, single-cause, technical: source_b filters "
+        "region = 'us', source_a has no region filter at all -- "
+        "correcting source_a toward source_b ADDS the missing predicate, "
+        "the only direction apply_filter_correction supports."
+    ),
+    source_a=DashboardSource(
+        label="dashboard_a",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01'",
+        declared_definition=None,
+    ),
+    source_b=DashboardSource(
+        label="finance_query",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01' AND region = 'us'",
+        declared_definition=None,
+    ),
+    reported_value_a=450.0,
+    reported_value_b=250.0,
+    known_gap=450.0 - 250.0,
+    seed_table="case_21_filter_add_direction",
+)
+
 SCENARIOS = [
     CASE_1_JOIN_TYPE,
     CASE_2_MULTI_CAUSE,
@@ -773,6 +1060,12 @@ SCENARIOS = [
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
     CASE_15_DATE_FIELD_INFERRED_ONLY,
+    CASE_16_EXCLUDED_STATUSES_DECLARED,
+    CASE_17_JOIN_TYPE_EXCLUDED_STATUSES_INTERACTING,
+    CASE_18_JOIN_TYPE_ONLY,
+    CASE_19_DATE_FIELD_EXCLUDED_STATUSES_DECLARED,
+    CASE_20_STALE_EXTRACT_JOIN_COLLISION,
+    CASE_21_FILTER_ADD_DIRECTION,
 ]
 """Build 3, Day 3, Part 7: Case 15 (finalized 8-scenario list, item 1) added
 directly -- unlike Cases 8-11, it carries no exclusion-trigger caveat: it is
