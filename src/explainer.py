@@ -17,7 +17,21 @@ with explicit prompt instructions covering the two risks decisions 14 and 17
 against a reconciliation figure as if additive (decision 17), and never
 describe an investigation as "no cause found" when reconciliation is empty
 but data_quality_issues is not (decision 14's defect-1 pattern, applied to
-this field)."""
+this field).
+
+Build 3, Day 4, Part 1 follow-up: live verification of the above (real API
+calls against Cases 8, 9, 10, 11, 20) surfaced a third, previously-unnamed
+defect -- the model correctly avoided both named traps but still
+characterized every data-quality cause as only "partially" explaining the
+gap, reasoning from unexplained_residual's nonzero value even when a
+data_quality_issues figure fully accounts for it. A third instruction now
+tells the model explicitly that unexplained_residual never accounts for
+data_quality_issues (this project's own additive-only convention, Build 2
+Day 5), so a nonzero residual is not grounds to call a data-quality finding
+incomplete. The same session also fixed _format_evidence_prompt's crash
+against a None unexplained_residual (PartialInvestigationEvidence,
+tests/fixtures/benchmark_pipeline.py) with a small guard, not a redesign --
+still not exercised by any committed scenario as of this entry."""
 
 from src.llm_client import generate_structured
 from src.schema import InvestigationEvidence
@@ -82,7 +96,13 @@ def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
         lines.append("- None.")
 
     lines.append("")
-    lines.append(f"## Unexplained residual\n{evidence.unexplained_residual:+.2f}")
+    if evidence.unexplained_residual is None:
+        lines.append(
+            "## Unexplained residual\nNot computed -- this investigation could not be fully "
+            "reconciled (see the findings above for what was determined)."
+        )
+    else:
+        lines.append(f"## Unexplained residual\n{evidence.unexplained_residual:+.2f}")
 
     evidence_block = "\n".join(lines)
 
@@ -90,15 +110,30 @@ def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
         "Instructions:",
         "- Reference only the facts listed above. Do not invent a cause, mechanism, or "
         "dollar figure that is not explicitly present here.",
-        "- State the unexplained residual honestly. If it is not (near) zero, say plainly "
-        "that the gap is not fully explained by the causes found -- do not paper over it, "
-        "and do not guess at a plausible-sounding reason to fill the gap.",
-        "- If there are no reconciled causes, no data-quality issues, and a nonzero residual, "
-        "say explicitly that no cause was identified and the entire gap remains unexplained. "
-        "Do not fabricate a cause to make the explanation feel complete.",
-        "- If there are no reconciled causes, no data-quality issues, and the residual is "
-        "zero, say plainly that the two sources agree and no discrepancy was found.",
     ]
+
+    if evidence.unexplained_residual is None:
+        instructions.append(
+            "- The unexplained residual was not computed for this investigation (see above). "
+            "Do not state a residual figure, and do not assume it is zero or any other value "
+            "-- say plainly, based only on the findings actually listed above, that the full "
+            "financial gap could not be fully reconciled with the tools available."
+        )
+    else:
+        instructions.append(
+            "- State the unexplained residual honestly. If it is not (near) zero, say plainly "
+            "that the gap is not fully explained by the causes found -- do not paper over it, "
+            "and do not guess at a plausible-sounding reason to fill the gap."
+        )
+
+    if evidence.unexplained_residual is not None:
+        instructions += [
+            "- If there are no reconciled causes, no data-quality issues, and a nonzero "
+            "residual, say explicitly that no cause was identified and the entire gap remains "
+            "unexplained. Do not fabricate a cause to make the explanation feel complete.",
+            "- If there are no reconciled causes, no data-quality issues, and the residual is "
+            "zero, say plainly that the two sources agree and no discrepancy was found.",
+        ]
 
     if evidence.data_quality_issues and evidence.reconciliation:
         instructions.append(
@@ -116,6 +151,19 @@ def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
             "that cause normally, the way you would explain any other finding -- do not "
             "describe this investigation as having found no cause, and do not say the gap "
             "is entirely unexplained when a data-quality issue accounts for it."
+        )
+
+    if evidence.data_quality_issues:
+        instructions.append(
+            "- The unexplained residual figure above does NOT include or account for the "
+            "data-quality issues listed -- by this project's own accounting convention, a "
+            "data-quality issue's dollar_impact is never subtracted out of the residual. A "
+            "nonzero residual is therefore NOT evidence that a data-quality cause only "
+            "partially explains the gap, and it is not grounds to say other causes may exist "
+            "or that further investigation is needed. Explain each data-quality issue as a "
+            "complete, confirmed finding in its own right, and discuss the residual (if "
+            "nonzero) only as a separate fact about what the reconciled causes above do not "
+            "cover -- do not connect the two."
         )
 
     instructions.append("- Write 2-4 short paragraphs in plain business language, no markdown headers.")

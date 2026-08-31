@@ -17,6 +17,7 @@ from src.schema import (
     SelfConsistencyIssue,
     SQLStructuralDifference,
 )
+from tests.fixtures.benchmark_pipeline import PartialInvestigationEvidence
 
 _EMPTY_EVIDENCE = InvestigationEvidence(
     definition_differences=[],
@@ -173,6 +174,57 @@ def test_prompt_instructs_data_quality_cause_is_real_even_when_reconciliation_em
     # The general "no cause identified" instruction is scoped to "no data-quality
     # issues" so it doesn't contradict the data-quality-specific instruction above.
     assert "no reconciled causes, no data-quality issues, and a nonzero residual" in prompt
+
+
+def test_prompt_instructs_residual_does_not_excuse_a_data_quality_cause_as_partial():
+    """Build 3, Day 4, Part 1 follow-up: live verification found the model
+    correctly avoided the two named traps but still framed every
+    data-quality cause as only 'partially' explaining the gap, reasoning
+    from the nonzero residual. This third instruction fires whenever
+    data_quality_issues is non-empty, regardless of reconciliation state."""
+    evidence = _EMPTY_EVIDENCE.model_copy(
+        update={
+            "data_quality_issues": [
+                DataQualityIssue(
+                    category="stale_extract",
+                    source="a",
+                    description="source_a's extract is missing 1 row",
+                    confidence="high",
+                    dollar_impact=-150.0,
+                )
+            ],
+            "unexplained_residual": -150.0,
+        }
+    )
+    prompt = _format_evidence_prompt(evidence)
+    assert "does NOT include or account for the data-quality issues listed" in prompt
+    assert "NOT evidence that a data-quality cause only partially explains the gap" in prompt
+
+
+def test_prompt_omits_data_quality_residual_instruction_when_no_data_quality_issues():
+    prompt = _format_evidence_prompt(_EMPTY_EVIDENCE)
+    assert "does NOT include or account for the data-quality issues listed" not in prompt
+
+
+def test_prompt_handles_none_residual_without_crashing():
+    """PartialInvestigationEvidence (tests/fixtures/benchmark_pipeline.py)
+    defaults unexplained_residual to None, honestly reflecting that the
+    ambiguous-scenario wrapper's escalated path never computes it.
+    _format_evidence_prompt previously crashed with
+    TypeError: unsupported format string passed to NoneType.__format__."""
+    partial = PartialInvestigationEvidence(
+        definition_differences=[],
+        self_consistency_issues=[],
+        sql_differences=[],
+        data_quality_issues=[],
+    )
+    prompt = _format_evidence_prompt(partial)
+    assert "Not computed" in prompt
+    assert "financial gap could not be fully reconciled" in prompt
+    # The value-dependent residual instructions must not appear when there is no value.
+    assert "If it is not (near) zero" not in prompt
+    assert "no reconciled causes, no data-quality issues, and a nonzero residual" not in prompt
+    assert "no reconciled causes, no data-quality issues, and the residual is" not in prompt
 
 
 def test_prompt_instructs_against_fabricating_a_cause_when_none_found():
