@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 from src import explainer
 from src.explainer import _format_evidence_prompt, explain_investigation
 from src.schema import (
+    DataQualityIssue,
     DefinitionDifference,
     InvestigationEvidence,
     ReconciliationLineItem,
@@ -103,6 +104,75 @@ def test_prompt_states_unexplained_residual_value():
     evidence = _EMPTY_EVIDENCE.model_copy(update={"unexplained_residual": 3800.0})
     prompt = _format_evidence_prompt(evidence)
     assert "+3800.00" in prompt
+
+
+def test_prompt_includes_every_data_quality_issue():
+    evidence = _EMPTY_EVIDENCE.model_copy(
+        update={
+            "data_quality_issues": [
+                DataQualityIssue(
+                    category="stale_extract",
+                    source="a",
+                    description="source_a's extract is missing 1 row present in the complete snapshot",
+                    confidence="high",
+                    dollar_impact=-150.0,
+                )
+            ]
+        }
+    )
+    prompt = _format_evidence_prompt(evidence)
+    assert "category=stale_extract" in prompt
+    assert "source=a" in prompt
+    assert "-150.00" in prompt
+
+
+def test_prompt_instructs_not_to_sum_data_quality_and_reconciliation_when_both_present():
+    """Case 20's shape: reconciliation and data_quality_issues both non-empty --
+    decision 17's own named risk (docs/decisions.md), now reachable in the prompt."""
+    evidence = _EMPTY_EVIDENCE.model_copy(
+        update={
+            "reconciliation": [
+                ReconciliationLineItem(cause="join_type mismatch", dollar_impact=300.0, computed_by="single_cause_attribution")
+            ],
+            "data_quality_issues": [
+                DataQualityIssue(
+                    category="referential_integrity",
+                    source="a",
+                    description="orphan row",
+                    confidence="high",
+                    dollar_impact=300.0,
+                )
+            ],
+        }
+    )
+    prompt = _format_evidence_prompt(evidence)
+    assert "Do NOT add a data-quality issue's dollar_impact to a reconciled cause's dollar_impact" in prompt
+
+
+def test_prompt_instructs_data_quality_cause_is_real_even_when_reconciliation_empty():
+    """Cases 8-11's shape: data_quality_issues non-empty, reconciliation empty --
+    decision 14's defect-1 pattern (an empty category narrated as 'does not
+    exist'), applied to this field."""
+    evidence = _EMPTY_EVIDENCE.model_copy(
+        update={
+            "data_quality_issues": [
+                DataQualityIssue(
+                    category="stale_extract",
+                    source="a",
+                    description="source_a's extract is missing 1 row",
+                    confidence="high",
+                    dollar_impact=-150.0,
+                )
+            ],
+            "unexplained_residual": -150.0,
+        }
+    )
+    prompt = _format_evidence_prompt(evidence)
+    assert "does NOT mean nothing was found" in prompt
+    assert "do not describe this investigation as having found no cause" in prompt
+    # The general "no cause identified" instruction is scoped to "no data-quality
+    # issues" so it doesn't contradict the data-quality-specific instruction above.
+    assert "no reconciled causes, no data-quality issues, and a nonzero residual" in prompt
 
 
 def test_prompt_instructs_against_fabricating_a_cause_when_none_found():
