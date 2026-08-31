@@ -31,10 +31,36 @@ Day 5), so a nonzero residual is not grounds to call a data-quality finding
 incomplete. The same session also fixed _format_evidence_prompt's crash
 against a None unexplained_residual (PartialInvestigationEvidence,
 tests/fixtures/benchmark_pipeline.py) with a small guard, not a redesign --
-still not exercised by any committed scenario as of this entry."""
+still not exercised by any committed scenario as of this entry.
+
+Build 3, Day 4, Part 4 (DESIGN PROBE, not a trusted feature): an
+evidence-only escalation instruction, letting the model itself decide from
+`definition_differences` alone (no BenchmarkEntry.is_ambiguous access, no
+label of any kind) whether to produce ESCALATION_STATEMENT verbatim instead
+of a normal explanation, per decision 6's escalation requirement. This is
+explicitly a probe of whether evidence-only recognition is viable at all --
+live verification results are reported in this task's own PR, not silently
+assumed to work; see docs/decisions.md for the eventual verdict once
+written."""
 
 from src.llm_client import generate_structured
 from src.schema import InvestigationEvidence
+
+ESCALATION_STATEMENT = (
+    "This investigation involves a genuine business-rule disagreement between the two "
+    "sources, not a technical error -- a person familiar with both dashboards' intended "
+    "purpose should review it and decide which definition is correct. No further "
+    "automated explanation is provided."
+)
+"""Build 3, Day 4, Part 4 (design probe, not a trusted feature): the exact,
+fixed sentence _format_evidence_prompt instructs the model to produce,
+verbatim and alone, when it judges a scenario to be genuinely ambiguous --
+matching decision 6's own requirement (docs/decisions.md) that escalation be
+"one clear, unmistakable statement," never a hedge alongside a partial
+answer. Exposed as a module constant (not inlined into the instruction
+string) so a caller/checker can compare a response against it exactly,
+the same way Build 3's future unsupported-claim-rate checker will need an
+exact string to test for, not a fuzzy substring guess."""
 
 
 def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
@@ -166,7 +192,27 @@ def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
             "cover -- do not connect the two."
         )
 
-    instructions.append("- Write 2-4 short paragraphs in plain business language, no markdown headers.")
+    instructions.append(
+        "- ESCALATION CHECK (evaluate this before writing your explanation): if, and only "
+        "if, the metric-definition differences above include TWO OR MORE entries that are "
+        "ALL source='declared' (not 'inferred') AND ALL confidence='high', AND you judge "
+        "that each side's declared value plausibly represents a real, defensible business "
+        "convention for this metric -- not simply one side being wrong, outdated, or a "
+        "technical mistake -- then this may be a genuine business-rule disagreement rather "
+        "than a technical bug. In that case, and ONLY in that case, respond with EXACTLY "
+        f"the following sentence and nothing else -- no other paragraph, no hedge, no "
+        f"partial explanation: \"{ESCALATION_STATEMENT}\" Do NOT escalate merely because a "
+        "confidence level is low, because a value looks unclear or hard to interpret, or "
+        "because this investigation is incomplete (for example, the unexplained residual "
+        "could not be computed) -- those situations call for stating your uncertainty about "
+        "the cause in a normal explanation, not for this escalation statement. If the "
+        "escalation criteria above are not clearly met, do not escalate under any "
+        "circumstance -- write your normal explanation instead."
+    )
+    instructions.append(
+        "- Unless the escalation statement above applies, write 2-4 short paragraphs in "
+        "plain business language, no markdown headers."
+    )
 
     return (
         "You are explaining the results of a deterministic KPI-discrepancy investigation "

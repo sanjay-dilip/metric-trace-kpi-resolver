@@ -8,7 +8,7 @@ The manual, per-fixture grounding check against real Gemini output is Part
 from unittest.mock import MagicMock
 
 from src import explainer
-from src.explainer import _format_evidence_prompt, explain_investigation
+from src.explainer import ESCALATION_STATEMENT, _format_evidence_prompt, explain_investigation
 from src.schema import (
     DataQualityIssue,
     DefinitionDifference,
@@ -206,6 +206,29 @@ def test_prompt_omits_data_quality_residual_instruction_when_no_data_quality_iss
     assert "does NOT include or account for the data-quality issues listed" not in prompt
 
 
+def test_prompt_includes_escalation_check_against_partial_investigation_evidence():
+    """Build 3, Day 4, Part 4 Task 1's own explicit requirement: confirm
+    directly, not assume, that the escalation instruction renders against
+    PartialInvestigationEvidence the same way it does InvestigationEvidence."""
+    partial = PartialInvestigationEvidence(
+        definition_differences=[
+            DefinitionDifference(
+                field="date_field",
+                source_a_value="order_date",
+                source_b_value="created_at",
+                source="declared",
+                confidence="high",
+            )
+        ],
+        self_consistency_issues=[],
+        sql_differences=[],
+        data_quality_issues=[],
+    )
+    prompt = _format_evidence_prompt(partial)
+    assert "ESCALATION CHECK" in prompt
+    assert ESCALATION_STATEMENT in prompt
+
+
 def test_prompt_handles_none_residual_without_crashing():
     """PartialInvestigationEvidence (tests/fixtures/benchmark_pipeline.py)
     defaults unexplained_residual to None, honestly reflecting that the
@@ -225,6 +248,19 @@ def test_prompt_handles_none_residual_without_crashing():
     assert "If it is not (near) zero" not in prompt
     assert "no reconciled causes, no data-quality issues, and a nonzero residual" not in prompt
     assert "no reconciled causes, no data-quality issues, and the residual is" not in prompt
+
+
+def test_prompt_includes_the_escalation_check_and_exact_statement():
+    """Build 3, Day 4, Part 4 (design probe, not a trusted feature): the
+    escalation instruction and ESCALATION_STATEMENT's exact text must
+    always be present, regardless of evidence shape, since the model is
+    meant to judge eligibility from the evidence alone, not from a
+    Python-computed gate."""
+    prompt = _format_evidence_prompt(_EMPTY_EVIDENCE)
+    assert "ESCALATION CHECK" in prompt
+    assert ESCALATION_STATEMENT in prompt
+    assert "TWO OR MORE entries" in prompt
+    assert "Do NOT escalate merely because" in prompt
 
 
 def test_prompt_instructs_against_fabricating_a_cause_when_none_found():
