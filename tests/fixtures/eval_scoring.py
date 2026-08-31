@@ -78,6 +78,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from src.explainer import explain_investigation
+from src.llm_client import generate_structured
 from src.schema import DataQualityIssue, DefinitionDifference, InvestigationEvidence, ReconciliationLineItem
 from tests.fixtures.benchmark_entries import BENCHMARK_ENTRIES, BenchmarkEntry
 from tests.fixtures.benchmark_pipeline import PartialInvestigationEvidence, assemble_investigation_evidence_for_benchmark
@@ -494,3 +495,137 @@ def run_benchmark() -> list[ScenarioScore]:
         prose = explain_investigation(evidence)
         scores.append(score_scenario(entry, prose))
     return scores
+
+
+# --- Build 3, Day 4, Part 8, Task 2: an LLM-graded alternative to the ---
+# --- hand-written pattern detector above, for head-to-head comparison. ---
+
+
+class LLMClaimGrading(BaseModel):
+    """Structured yes/no verdict for each of the four named unsupported-
+    claim patterns (decisions 14, 30, 32, docs/decisions.md) -- scoped
+    exactly to those four, not a general "find hallucinations" grader.
+    Field names deliberately match ScenarioScore.unsupported_claim_patterns'
+    own Literal values so a caller can compare the two detectors' outputs
+    directly, field for field."""
+
+    sign_dropping: bool
+    hedge_then_retract: bool
+    residual_self_contradiction: bool
+    fact_doubling: bool
+
+
+def _format_grading_prompt(prose: str, evidence: _Evidence, known_gap: float) -> str:
+    """Builds a compact ground-truth summary (deliberately NOT a reuse of
+    src/explainer.py's own _format_evidence_prompt, which is a private
+    function building a DIFFERENT prompt for a DIFFERENT purpose --
+    narrating evidence to a stakeholder, not grading a narration against
+    it) plus the exact, precisely-worded definition of all four patterns,
+    matching decisions 14/30/32's own descriptions."""
+    lines: list[str] = ["## Real evidence (ground truth, computed deterministically)"]
+
+    lines.append("Reconciled causes:")
+    if evidence.reconciliation:
+        for item in evidence.reconciliation:
+            lines.append(f"- {item.cause} | dollar_impact={item.dollar_impact:+.2f}")
+    else:
+        lines.append("- None.")
+
+    lines.append("Self-consistency issues:")
+    if evidence.self_consistency_issues:
+        for issue in evidence.self_consistency_issues:
+            lines.append(
+                f"- source={issue.source} declared_field={issue.declared_field} "
+                f"dollar_impact={issue.dollar_impact:+.2f}"
+            )
+    else:
+        lines.append("- None.")
+
+    lines.append("Definitional differences:")
+    if evidence.definition_differences:
+        for d in evidence.definition_differences:
+            lines.append(f"- field={d.field} source_a={d.source_a_value!r} source_b={d.source_b_value!r}")
+    else:
+        lines.append("- None.")
+
+    lines.append("SQL structural differences:")
+    if evidence.sql_differences:
+        for s in evidence.sql_differences:
+            lines.append(f"- category={s.category} | {s.description}")
+    else:
+        lines.append("- None.")
+
+    lines.append("Data-quality issues:")
+    if evidence.data_quality_issues:
+        for q in evidence.data_quality_issues:
+            lines.append(f"- category={q.category} | dollar_impact={q.dollar_impact:+.2f}")
+    else:
+        lines.append("- None.")
+
+    lines.append(f"Real known_gap (the true total dollar difference): {known_gap:+.2f}")
+
+    evidence_block = "\n".join(lines)
+
+    return (
+        "You are a precise, narrow QA checker. You are given the REAL, deterministically-"
+        "computed evidence for one investigation, and a RESPONSE an AI system wrote "
+        "narrating that evidence to a business stakeholder. Your ONLY job is to check whether "
+        "the RESPONSE exhibits any of four SPECIFIC, precisely-defined defect patterns -- do "
+        "not flag anything else, and do not act as a general hallucination detector.\n\n"
+        f"{evidence_block}\n\n"
+        "## Response under review\n"
+        f"{prose}\n\n"
+        "Check for exactly these four patterns, each against the real evidence above:\n\n"
+        "1. sign_dropping: a NEGATIVE dollar_impact figure from the real evidence is stated "
+        "in the response as a bare POSITIVE magnitude, with no minus sign, no parentheses, "
+        "and no qualifying word ('reduces', 'offsets', 'negative', 'decreases', or similar) "
+        "anywhere near it.\n"
+        "2. hedge_then_retract: the response introduces language implying a cause exists in "
+        "an evidence category that is actually EMPTY above (e.g. 'we identified another "
+        "cause... however, this cause does not exist'), rather than simply omitting or "
+        "stating 'none' for that empty category.\n"
+        "3. residual_self_contradiction: the response states language like 'other causes may "
+        "exist', 'further investigation is needed', or 'only a portion of the gap' about a "
+        "data-quality cause that IS present in the real evidence above -- whether or not the "
+        "response ALSO correctly states elsewhere that a nonzero residual does not diminish "
+        "that cause's completeness. Flag this whenever the violating language appears for a "
+        "data-quality cause that is genuinely present, regardless of whether it is also "
+        "correctly stated elsewhere.\n"
+        "4. fact_doubling: the response describes ONE real cause from the evidence above as "
+        "if it were TWO separate causes, and/or states an explicit total dollar figure that "
+        "does not match the real known_gap value given above.\n\n"
+        "Respond with ONLY a single JSON object, no other text before or after it, no "
+        "markdown code fences, with EXACTLY these four boolean fields: "
+        '{"sign_dropping": true/false, "hedge_then_retract": true/false, '
+        '"residual_self_contradiction": true/false, "fact_doubling": true/false}'
+    )
+
+
+_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
+
+def score_scenario_llm_graded(entry: BenchmarkEntry, prose: str) -> LLMClaimGrading:
+    """Real API call -- a separate, narrowly-scoped LLM grader, given the
+    prose plus the real underlying evidence, asked specifically whether
+    the prose exhibits any of the four named unsupported-claim patterns.
+
+    Structured output (LLMClaimGrading), not free text -- the same
+    discipline this project has held for every other structured-output
+    requirement. Achieved via prompt-instructed JSON + manual pydantic
+    validation, NOT generate_structured's own response_schema/
+    response_format parameter: a real, live finding from this task's own
+    first attempt -- the configured free-tier model
+    (meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo, routed through the
+    provider's chat_completion endpoint) rejects the request outright
+    ('json_schema response format is not supported for model...'), a
+    provider/model limitation, not a bug in llm_client.py. This function
+    still gets fully validated, typed output -- it just gets there by
+    asking for JSON in the prompt and validating the returned text,
+    rather than relying on the provider's native structured-output
+    feature, which is unavailable for this specific model."""
+    evidence = assemble_investigation_evidence_for_benchmark(entry)
+    prompt = _format_grading_prompt(prose, evidence, entry.scenario.known_gap)
+    raw = generate_structured(prompt)
+    assert isinstance(raw, str)
+    cleaned = _JSON_FENCE_RE.sub("", raw).strip()
+    return LLMClaimGrading.model_validate_json(cleaned)
