@@ -42,6 +42,8 @@ from tests.fixtures.scenarios import (
     CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION,
     CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES,
     CASE_15_DATE_FIELD_INFERRED_ONLY,
+    CASE_17_JOIN_TYPE_EXCLUDED_STATUSES_INTERACTING,
+    CASE_19_DATE_FIELD_EXCLUDED_STATUSES_DECLARED,
     SCENARIOS,
 )
 
@@ -162,10 +164,13 @@ def test_does_not_over_fire_on_unrelated_date_field_findings():
 
 def test_no_regressions_across_scenarios():
     """Case 2 (decision 10, distinct/aggregation), Case 3 (decision 12,
-    date_field/date_field), and Case 15 (Build 3, Day 3, Part 7 -- the
-    same date_field/date_field collision as Case 3, but inferred-vs-inferred
-    rather than declared-vs-inferred) are the only fixtures in SCENARIOS
-    affected by this rule; every other fixture's sql_differences/
+    date_field/date_field), Case 15 (Build 3, Day 3, Part 7 -- the same
+    date_field/date_field collision as Case 3, but inferred-vs-inferred
+    rather than declared-vs-inferred), and Case 19 (Build 3, Day 3, Part 9
+    -- the same collision again, this time both sides declared at
+    confidence="high", the first technical-scenario proof of decision 12
+    at that confidence level) are the only fixtures in SCENARIOS affected
+    by this rule; every other fixture's sql_differences/
     definition_differences must pass through unchanged. Renamed from
     "..._across_all_7_fixtures": SCENARIOS has grown well past 7 since
     this test was first written, and the old name was stale."""
@@ -173,6 +178,7 @@ def test_no_regressions_across_scenarios():
         "case_02_multi_cause": ["distinct"],
         "case_03_hybrid_fallback": ["date_field"],
         "case_15_date_field_inferred_only": ["date_field"],
+        "case_19_date_field_excluded_statuses_declared": ["date_field"],
     }
     for scenario in SCENARIOS:
         sql_diffs = diff_sql(parse_sql(scenario.source_a.sql), parse_sql(scenario.source_b.sql))
@@ -372,3 +378,45 @@ def test_case_15_date_field_suppressed_leaving_exactly_one_cause():
 
     assert sql_after == []
     assert [d.field for d in def_after] == ["date_field"]
+
+
+def test_case_17_join_type_and_excluded_statuses_do_not_collide():
+    """Case 17 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+    3): join_type + excluded_statuses is NOT one of the pairs any
+    suppression rule in this module covers (only distinct/aggregation,
+    date_field/date_field, and filter/excluded_statuses are). Both
+    findings must survive assemble_structural_and_definitional_evidence
+    completely unchanged -- proving this genuinely new pairing correctly
+    falls through every existing rule rather than accidentally matching
+    one of them."""
+    s = CASE_17_JOIN_TYPE_EXCLUDED_STATUSES_INTERACTING
+    sql_diffs = diff_sql(parse_sql(s.source_a.sql), parse_sql(s.source_b.sql))
+    def_diffs = diff_definitions(s.source_a, s.source_b)
+
+    assert [d.category for d in sql_diffs] == ["join_type"]
+    assert [(d.field, d.confidence) for d in def_diffs] == [("excluded_statuses", "high")]
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(sql_diffs, def_diffs)
+
+    assert sql_after == sql_diffs
+    assert def_after == def_diffs
+
+
+def test_case_19_date_field_suppressed_at_high_confidence():
+    """Case 19 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+    5): the first purely TECHNICAL fixture to prove decision 12's
+    date_field suppression at confidence="high" (both sides declared) --
+    every prior committed technical proof (Case 3, Case 14, Case 15) was
+    at "medium". AMBIGUOUS_REVENUE_RECOGNITION already proved "high" but
+    as an ambiguous scenario, not a technical one."""
+    s = CASE_19_DATE_FIELD_EXCLUDED_STATUSES_DECLARED
+    sql_diffs = diff_sql(parse_sql(s.source_a.sql), parse_sql(s.source_b.sql))
+    def_diffs = diff_definitions(s.source_a, s.source_b)
+
+    assert {d.category for d in sql_diffs} == {"date_field"}
+    assert [(d.field, d.confidence) for d in def_diffs] == [("date_field", "high"), ("excluded_statuses", "high")]
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(sql_diffs, def_diffs)
+
+    assert sql_after == []
+    assert [d.field for d in def_after] == ["date_field", "excluded_statuses"]

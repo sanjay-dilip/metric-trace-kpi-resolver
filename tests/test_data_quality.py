@@ -39,6 +39,7 @@ from tests.fixtures.scenarios import (
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
     CASE_12_JOIN_ORPHAN_COLLISION,
+    CASE_20_STALE_EXTRACT_JOIN_COLLISION,
 )
 
 
@@ -274,3 +275,29 @@ def test_check_referential_integrity_no_longer_crashes_on_a_joined_query():
     assert issue.confidence == "high"
     assert "1 row(s)" in issue.description
     assert issue.dollar_impact == s.known_gap == 300.0
+
+
+def test_case_20_stale_extract_fires_independently_of_the_coexisting_join_type_cause():
+    """Case 20 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+    7): check_stale_extract fires on the row genuinely missing from
+    source_a's as-delivered snapshot (order_id=2), computing a real,
+    signed dollar_impact via freshness_attribution -- run here directly
+    against the bare function (not through assemble_investigation_evidence,
+    which tests/test_investigation_evidence.py's own Case 20 test already
+    covers), confirming the check itself is correct in isolation before
+    trusting the dispatch wiring built on top of it. Unlike Case 8/9's own
+    single-cause fixtures, this dollar_impact does NOT equal known_gap
+    (100.0) -- it equals only the freshness cause's own share (-200.0),
+    since a second, independent cause (join_type, on a different row)
+    also contributes to known_gap here."""
+    s = CASE_20_STALE_EXTRACT_JOIN_COLLISION
+    stale_db = str(DATA_SAMPLE_DIR / f"{s.seed_table}_a.duckdb")
+    complete_db = str(DATA_SAMPLE_DIR / f"{s.freshness_complete_seed_table}_a.duckdb")
+
+    issue = check_stale_extract(complete_db, stale_db, "orders", s.source_a.sql, "a")
+
+    assert issue is not None
+    assert issue.category == "stale_extract"
+    assert issue.source == "a"
+    assert issue.dollar_impact == -200.0
+    assert issue.dollar_impact != s.known_gap

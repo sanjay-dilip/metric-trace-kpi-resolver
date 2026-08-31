@@ -420,6 +420,163 @@ CASE_15_ORDERS = [
 ]
 
 
+# --- Case 16 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item 2):
+# excluded_statuses only, single-cause, both sides DECLARED, high confidence.
+# A second clean data point alongside Case 4, at a different scale --
+# unlike Case 4 (a self-consistency/governance-drift fixture), this is a
+# genuine cross-source declared-vs-declared excluded_statuses diff with no
+# self-consistency issue on either side (each side's SQL faithfully
+# implements its own declaration). Reuses the plain orders/customers
+# schema (_build_orders_table) already established by Case 1/4/7. ---
+CASE_16_ORDERS = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 1, 200.0, "cancelled", "2024-02-01"),   # excluded by both
+    (3, 1, 300.0, "refunded", "2024-02-01"),    # A includes (only excludes cancelled), B excludes
+    (4, 1, 150.0, "active", "2023-12-01"),      # excluded by date, both sides
+]
+
+
+# --- Case 17 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item 3):
+# join_type + excluded_statuses, two-cause, INTERACTING on overlapping
+# rows -- the first structural x definitional interacting pair anywhere
+# in this project, closing decision 11's own longest-standing untested
+# scope gap (definitional-vs-structural interaction, zero coverage until
+# now). Both sides declare identically except excluded_statuses (a real
+# cross-source declared diff) AND use a different JOIN kind (LEFT vs
+# INNER, a real sql_diff structural diff) -- order_id=3 is the genuinely
+# OVERLAPPING row both causes act on: it references a nonexistent
+# customer (customer_id=99, dropped by B's INNER JOIN) AND carries
+# status='refunded' (excluded by B's declared excluded_statuses but not
+# A's) -- both mechanisms independently would remove this exact row from
+# B's result, which is exactly what makes this pair "interacting" rather
+# than two unrelated single causes that merely coexist. Reuses the
+# customers/orders schema Case 1/12 already established. ---
+CASE_17_CUSTOMERS = [(1, "active", "2024-01-01"), (2, "active", "2024-01-01")]
+CASE_17_ORDERS = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 2, 200.0, "active", "2024-02-01"),
+    (3, 99, 300.0, "refunded", "2024-02-01"),   # orphan (customer_id=99) AND refunded -- the overlapping row
+    (4, 1, 150.0, "cancelled", "2024-02-01"),   # excluded by both sides' declared excluded_statuses
+    (5, 1, 50.0, "active", "2023-12-01"),       # excluded by date, both sides
+]
+
+
+# --- Case 18 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+# 4): join_type only, single-cause, a DIFFERENT table pairing from Case 1
+# (support tickets referencing an assigned agent, rather than orders
+# referencing a customer) -- a second real data point on the one
+# structural category with full correction support, deliberately not a
+# copy of Case 1's own orders/customers domain. Same underlying mechanism
+# as Case 1 (an orphan fact row: ticket_id=3 references agent_id=99,
+# which does not exist in agents), LEFT keeps it, INNER drops it -- both
+# sides declare identically, so the only cause is structural. ---
+def _build_agents_table(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
+    con.execute("CREATE OR REPLACE TABLE agents (agent_id INTEGER, name VARCHAR)")
+    con.executemany("INSERT INTO agents VALUES (?, ?)", rows)
+
+
+def _build_tickets_table(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
+    con.execute(
+        "CREATE OR REPLACE TABLE tickets "
+        "(ticket_id INTEGER, agent_id INTEGER, amount DOUBLE, status VARCHAR, opened_date DATE)"
+    )
+    con.executemany("INSERT INTO tickets VALUES (?, ?, ?, ?, ?)", rows)
+
+
+CASE_18_AGENTS = [(1, "Agent A"), (2, "Agent B")]
+CASE_18_TICKETS = [
+    (1, 1, 120.0, "active", "2024-02-10"),
+    (2, 2, 80.0, "active", "2024-03-01"),
+    (3, 99, 200.0, "active", "2024-01-20"),   # orphan agent_id=99
+    (4, 1, 60.0, "cancelled", "2024-02-15"),  # excluded by status, both sides
+    (5, 1, 30.0, "active", "2023-12-01"),     # excluded by date, both sides
+]
+
+
+# --- Case 19 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+# 5): date_field + excluded_statuses, two-cause, BOTH DECLARED, high
+# confidence -- a technical mirror of AMBIGUOUS_REVENUE_RECOGNITION's own
+# shape (proving the Shapley-pair path holds with no business-rule
+# tension, just an honest bug on both dimensions). Also the first fixture
+# to exercise decision 12's date_field suppression at confidence="high"
+# (every prior proof -- Case 3, Case 14, Case 15 -- was at "medium").
+# Reuses the order_date/ship_date schema Case 15 already established. ---
+CASE_19_ORDERS = [
+    (1, 100.0, "active", "2024-02-01", "2024-02-05"),   # both after cutoff, active -- counts both ways
+    (2, 200.0, "refunded", "2024-02-01", "2024-02-05"), # both after cutoff; A keeps (excludes only cancelled), B drops
+    (3, 300.0, "active", "2023-12-20", "2024-01-05"),   # order_date before cutoff (A drops), ship_date after (B keeps)
+    (4, 150.0, "cancelled", "2024-02-01", "2024-02-05"),# excluded by both sides' declared excluded_statuses
+    (5, 250.0, "active", "2023-11-01", "2023-11-15"),   # excluded by date, both sides
+]
+
+
+# --- Case 20 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+# 7): data-quality (stale_extract) + structural (join_type) collision,
+# DELIBERATELY DISPATCHED -- the first live demonstration of decision
+# 17's legibility risk inside the actual `SCENARIOS` set (Case 1's own
+# orphan row reproduces the same risk but stays deliberately
+# undispatched; Case 12 proves an analogous collision via
+# referential_integrity but stays fully excluded from `SCENARIOS`).
+#
+# Mechanically, a stale_extract's "row missing" mechanism and join_type's
+# "orphan row present" mechanism cannot literally coincide on the
+# identical row (a row cannot be both absent from an extract and present-
+# but-orphaned in the same snapshot) -- so this fixture uses TWO real,
+# independent facts rather than forcing a literal single-row collision:
+# order_id=3 (customer_id=99, orphan) is present in BOTH source_a's
+# as-delivered data and source_b's data, giving join_type a real, nonzero
+# dollar_impact via reconciliation; order_id=2 (a normal, non-orphan row)
+# is MISSING from source_a's as-delivered snapshot relative to the
+# complete counterfactual, giving check_stale_extract a real, nonzero
+# dollar_impact via data_quality_issues. Confirmed live (not assumed):
+# unexplained_residual (-200.0) happens to equal the unfolded
+# data_quality_issue's own dollar_impact (-200.0) exactly for THIS
+# fixture's specific numbers -- a different, and arguably more
+# instructive, demonstration of decision 17's point than a literal same-
+# fact double-count: a naive reader summing reconciliation's join_type
+# figure (+300.0) and the data-quality figure (-200.0) would actually
+# land on known_gap (100.0) correctly here, by construction -- but the
+# pipeline's own unexplained_residual does NOT do that summation (data_
+# quality_issues stays additive-only, Build 2 Day 5's own locked
+# decision), so a reader must not assume EITHER outcome (safe-to-sum here
+# vs. double-counting on Case 12) without checking data_quality_issues
+# directly. No declared definitions on either side (both None) -- the
+# only structural/definitional cause present is join_type. ---
+CASE_20_CUSTOMERS = [(1, "active", "2024-01-01"), (2, "active", "2024-01-01")]
+CASE_20_ORDERS_COMPLETE = [
+    (1, 1, 100.0, "active", "2024-02-01"),
+    (2, 2, 200.0, "active", "2024-02-01"),
+    (3, 99, 300.0, "active", "2024-01-15"),  # orphan customer_id=99 -- present in both A-stale and B-complete
+    (4, 1, 50.0, "active", "2023-12-01"),    # excluded by date
+]
+CASE_20_ORDERS_STALE_A = [row for row in CASE_20_ORDERS_COMPLETE if row[0] != 2]  # order_id=2 missing from A's stale extract
+
+
+# --- Case 21 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+# 8): filter ADD-direction, single-cause, technical -- a plain WHERE-
+# clause presence/absence difference on a NON-status column (`region`),
+# no declared excluded_statuses on either side, exercising
+# apply_filter_correction's ADD path (decision 20) outside the ambiguous
+# set, where it has so far only been proven on AMBIGUOUS_ATTRIBUTION.
+# source_a is deliberately the side MISSING the filter (correction always
+# runs A-toward-B, and apply_filter_correction only supports the ADD
+# direction -- correcting a side missing a predicate toward the other
+# side's real one) -- source_b carries the real `region = 'us'` filter. ---
+def _build_orders_table_with_region(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
+    con.execute(
+        "CREATE OR REPLACE TABLE orders (order_id INTEGER, amount DOUBLE, order_date DATE, region VARCHAR)"
+    )
+    con.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", rows)
+
+
+CASE_21_ORDERS = [
+    (1, 100.0, "2024-02-01", "us"),
+    (2, 200.0, "2024-02-01", "eu"),   # A includes (no region filter), B excludes (region != 'us')
+    (3, 150.0, "2024-02-01", "us"),
+    (4, 50.0, "2023-12-01", "us"),    # excluded by date, both sides
+]
+
+
 # --- Ambiguous scenario proof-of-concept, Refund timing (Build 3, Day 2,
 # Part 3). Not a Build 2 data-quality/freshness cause and not a
 # declared-vs-inferred definitional cause -- both sides declare a real
@@ -653,6 +810,43 @@ def build_all() -> None:
             "case_15_date_field_inferred_only", side,
             (_build_orders_table_with_ship_date, CASE_15_ORDERS),
         )
+        _seed_file("case_16_excluded_statuses_declared", side, (_build_orders_table, CASE_16_ORDERS))
+        _seed_file(
+            "case_17_join_type_excluded_statuses_interacting", side,
+            (_build_customers_table, CASE_17_CUSTOMERS),
+            (_build_orders_table, CASE_17_ORDERS),
+        )
+        _seed_file(
+            "case_18_join_type_only", side,
+            (_build_agents_table, CASE_18_AGENTS),
+            (_build_tickets_table, CASE_18_TICKETS),
+        )
+        _seed_file(
+            "case_19_date_field_excluded_statuses_declared", side,
+            (_build_orders_table_with_ship_date, CASE_19_ORDERS),
+        )
+        _seed_file("case_21_filter_add_direction", side, (_build_orders_table_with_region, CASE_21_ORDERS))
+
+    _seed_file(
+        "case_20_stale_extract_join_collision", "a",
+        (_build_customers_table, CASE_20_CUSTOMERS),
+        (_build_orders_table, CASE_20_ORDERS_STALE_A),
+    )
+    _seed_file(
+        "case_20_stale_extract_join_collision", "b",
+        (_build_customers_table, CASE_20_CUSTOMERS),
+        (_build_orders_table, CASE_20_ORDERS_COMPLETE),
+    )
+    _seed_file(
+        "case_20_stale_extract_join_collision_complete", "a",
+        (_build_customers_table, CASE_20_CUSTOMERS),
+        (_build_orders_table, CASE_20_ORDERS_COMPLETE),
+    )
+    _seed_file(
+        "case_20_stale_extract_join_collision_complete", "b",
+        (_build_customers_table, CASE_20_CUSTOMERS),
+        (_build_orders_table, CASE_20_ORDERS_COMPLETE),
+    )
 
     _seed_file("case_05_unexplained_residual", "a", (_build_orders_table, CASE_5_ORDERS_A))
     _seed_file("case_05_unexplained_residual", "b", (_build_orders_table, CASE_5_ORDERS_B))
