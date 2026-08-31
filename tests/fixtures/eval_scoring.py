@@ -42,7 +42,35 @@ to report -- documented here, not silently smoothed over:
      (an aggregation synonym) inside the unrelated word 'summary' ('In
      summary, ...'); switched to word-boundary regex matching, with `_`
      normalized to a space first since a literal snake_case token like
-     'excluded_statuses' reads as one unbroken word to \b otherwise."""
+     'excluded_statuses' reads as one unbroken word to \b otherwise.
+
+Build 3, Day 4, Part 7 (decision 32): a fresh, independent 5-scenario
+re-test (not reused prose) found the original 0/24 unsupported-claim
+result did not hold up under a second sample -- 1 brand-new, previously
+undetected defect shape (Case 4), 1 detector false positive (Case 10),
+1 detector false negative (Case 20). Reported, not fixed, in that entry.
+
+Build 3, Day 4, Part 8, Task 1: fixed exactly those three diagnosed gaps,
+no broader rewrite:
+  1. Case 10's false positive: _violating_phrase_present's negation guard
+     used a fixed 20-character lookback window; the real sentence
+     ('this is not evidence that additional causes exist or that further
+     investigation is needed') has the negating "not" ~50 characters
+     before the violating phrase. Replaced the fixed window with a
+     sentence-scoped one (scans back to the nearest preceding
+     '.'/'!'/'?', not a guessed character count).
+  2. Case 20's false negative: _detect_residual_self_contradiction
+     required BOTH a correcting phrase and a violating phrase to
+     co-occur; Case 20's fresh response only ever violated the
+     constraint, never stated it correctly, so the co-occurrence
+     requirement never fired. A bare (negation-guarded) violating
+     phrase is now sufficient on its own.
+  3. Case 4's undetected defect: added a fourth named pattern,
+     "fact_doubling" (_detect_fact_doubling, _TOTAL_CLAIM_RE) -- an
+     explicit claimed "total X impact" that mismatches the scenario's
+     real known_gap, matched directly against Case 4's own quoted
+     output ('contribute a total dollar impact of +400.00' against a
+     real known_gap of 200.0)."""
 
 import re
 from typing import Literal
@@ -50,6 +78,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from src.explainer import explain_investigation
+from src.llm_client import generate_structured
 from src.schema import DataQualityIssue, DefinitionDifference, InvestigationEvidence, ReconciliationLineItem
 from tests.fixtures.benchmark_entries import BENCHMARK_ENTRIES, BenchmarkEntry
 from tests.fixtures.benchmark_pipeline import PartialInvestigationEvidence, assemble_investigation_evidence_for_benchmark
@@ -96,17 +125,6 @@ _RESIDUAL_VIOLATING_PHRASES = [
 """Decision 30's own quoted contradicting phrases (Cases 10, 11, 20's live
 verification transcript), used verbatim, not re-derived."""
 
-_RESIDUAL_CORRECTING_PHRASES = [
-    "not evidence that",
-    "does not include or account for",
-    "not grounds to say other causes",
-    "separate fact",
-]
-"""Phrases matching the residual-framing instruction's own wording
-(src/explainer.py) -- decision 30's finding is specifically the
-CO-OCCURRENCE of one of these with one of the violating phrases above in
-the same response, not either alone."""
-
 _HEDGE_THEN_RETRACT_RE = re.compile(
     r"(identified|another)[\s\S]{0,150}?cause[\s\S]{0,200}?(does not exist|doesn't exist)", re.IGNORECASE
 )
@@ -120,6 +138,24 @@ defect this pattern is named for. Bounded by character count, not sentence
 count, so the window doesn't grow unbounded across an entire long
 response."""
 
+_TOTAL_CLAIM_RE = re.compile(
+    r"total\s+(?:dollar\s+)?impact\s+of\s*[\+\-]?\$?\s*(?P<amt1>\d[\d,]*(?:\.\d+)?)"
+    r"|contribute[sd]?\s+a\s+total\s+(?:dollar\s+impact\s+)?of\s*[\+\-]?\$?\s*(?P<amt2>\d[\d,]*(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+"""Build 3, Day 4, Part 8, Task 1: the fourth named pattern, decision 32's
+own fact-doubling defect (Case 4) -- matched directly against its actual
+quoted output: 'These causes contribute a total dollar impact of +400.00,
+which fully explains the gap', where the real known_gap is 200.0. Case 4's
+real evidence has exactly ONE ReconciliationLineItem (a single
+self-consistency correction, dollar_impact=200.0); the fresh response
+narrated it as two separate causes, each independently worth +200.00, and
+then explicitly summed them. Detected precisely as an EXPLICIT claimed
+total that mismatches the real known_gap -- not a fragile "the same dollar
+figure appears twice" heuristic, which would false-positive on any
+legitimate two-cause scenario (Case 2, Case 3, Case 19, ...) whose two
+real, distinct causes happen to share a magnitude by coincidence."""
+
 
 class ScenarioScore(BaseModel):
     """One scenario's scoring result. root_cause_correct is bool for every
@@ -130,7 +166,9 @@ class ScenarioScore(BaseModel):
 
     scenario_id: str
     root_cause_correct: bool | Literal["not_gradable"]
-    unsupported_claim_patterns: list[Literal["sign_dropping", "hedge_then_retract", "residual_self_contradiction"]]
+    unsupported_claim_patterns: list[
+        Literal["sign_dropping", "hedge_then_retract", "residual_self_contradiction", "fact_doubling"]
+    ]
     checks_run: list[str]
     escalation_status: Literal["not_gradable"] = "not_gradable"
     """Decision 6's escalation recall / false-escalation rate are explicitly
@@ -329,26 +367,66 @@ verification (Build 3, Day 4, Part 6, Task 3) found a real false positive:
 investigation is needed' as a literal substring, but the leading 'no'
 reverses its meaning entirely into a CORRECT statement, not a contradiction."""
 
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?]")
+"""Build 3, Day 4, Part 8, Task 1 fix: a real Case 10 false positive
+(decision 32) traced to a fixed 20-character negation-lookback window --
+that scenario's actual sentence, 'this is not evidence that additional
+causes exist or that further investigation is needed', has ~50 characters
+between 'not' and the violating phrase 'further investigation is needed'
+(the compound 'not X or that Y' construction), well outside that window.
+Rather than guess a wider fixed number (a speculative rewrite the next
+long sentence could just as easily defeat), the negation search now scans
+back to the start of the CONTAINING SENTENCE instead -- correctly reaches
+the real 'not' in Case 10's exact sentence without reaching into an
+unrelated prior sentence, which a much larger fixed window risked doing."""
+
 
 def _violating_phrase_present(prose: str, phrase: str) -> bool:
     for match in re.finditer(re.escape(phrase), prose, re.IGNORECASE):
-        window_start = max(0, match.start() - 20)
-        if _NEGATION_RE.search(prose[window_start : match.start()]):
+        preceding = prose[: match.start()]
+        boundaries = [m.end() for m in _SENTENCE_BOUNDARY_RE.finditer(preceding)]
+        sentence_start = boundaries[-1] if boundaries else 0
+        if _NEGATION_RE.search(prose[sentence_start : match.start()]):
             continue
         return True
     return False
 
 
 def _detect_residual_self_contradiction(prose: str) -> bool:
-    """Decision 30's pattern: the residual-framing instruction's own
-    constraint stated correctly in one part of the response, violated in
-    another. Detected as co-occurrence, not either phrase alone -- a
-    response that only ever states the constraint (Case 8's clean pass) or
-    only ever violates it should not be flagged the same as one that does
-    both (Cases 10/11/20's actual defect)."""
-    has_correcting = any(phrase in prose for phrase in _RESIDUAL_CORRECTING_PHRASES)
-    has_violating = any(_violating_phrase_present(prose, phrase) for phrase in _RESIDUAL_VIOLATING_PHRASES)
-    return has_correcting and has_violating
+    """Decision 30's original pattern: the residual-framing instruction's
+    own constraint stated correctly in one part of the response, then
+    violated in another (Cases 10/11/20's original defect). Build 3, Day
+    4, Part 8, Task 1 fix: the original co-occurrence-only design was
+    proven, by decision 32's fresh re-test, to MISS a related, one-sided
+    variant -- Case 20's fresh response violated the constraint ('there
+    may be other underlying causes that have not been identified...
+    further investigation is needed') without ever stating the correct
+    constraint anywhere in the response, so the old
+    `has_correcting and has_violating` check never fired at all. A bare
+    violating phrase (correctly negation-guarded, see
+    _violating_phrase_present) is now sufficient on its own -- the
+    correcting phrase's presence is no longer required, since a response
+    that never engages with the constraint at all is not a lesser
+    violation than one that recites it and then contradicts it; if
+    anything it is a more complete failure to follow the instruction."""
+    return any(_violating_phrase_present(prose, phrase) for phrase in _RESIDUAL_VIOLATING_PHRASES)
+
+
+def _detect_fact_doubling(prose: str, known_gap: float) -> bool:
+    """Decision 32's fourth named pattern (Case 4, Build 3 Day 4 Part 7):
+    the model narrates a single real cause as two separate causes and
+    states an explicit summed total that does not match the scenario's
+    real known_gap. Runs unconditionally (like root-cause scoring) --
+    an explicit 'total X' claim is checkable the same way for any
+    scenario, not just ones where the underlying evidence shape makes the
+    risk obvious in advance; a scenario with no such claim in its prose
+    simply produces no _TOTAL_CLAIM_RE match and this returns False."""
+    for match in _TOTAL_CLAIM_RE.finditer(prose):
+        raw = match.group("amt1") or match.group("amt2")
+        claimed_total = float(raw.replace(",", ""))
+        if round(claimed_total, 2) != round(abs(known_gap), 2):
+            return True
+    return False
 
 
 def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
@@ -361,7 +439,13 @@ def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
     checks_run = ["root_cause"]
     root_cause_correct = _score_root_cause(entry, prose, evidence)
 
-    unsupported_claim_patterns: list[Literal["sign_dropping", "hedge_then_retract", "residual_self_contradiction"]] = []
+    unsupported_claim_patterns: list[
+        Literal["sign_dropping", "hedge_then_retract", "residual_self_contradiction", "fact_doubling"]
+    ] = []
+
+    checks_run.append("fact_doubling")
+    if _detect_fact_doubling(prose, entry.scenario.known_gap):
+        unsupported_claim_patterns.append("fact_doubling")
 
     has_any_negative = any(
         item.dollar_impact < 0
@@ -411,3 +495,137 @@ def run_benchmark() -> list[ScenarioScore]:
         prose = explain_investigation(evidence)
         scores.append(score_scenario(entry, prose))
     return scores
+
+
+# --- Build 3, Day 4, Part 8, Task 2: an LLM-graded alternative to the ---
+# --- hand-written pattern detector above, for head-to-head comparison. ---
+
+
+class LLMClaimGrading(BaseModel):
+    """Structured yes/no verdict for each of the four named unsupported-
+    claim patterns (decisions 14, 30, 32, docs/decisions.md) -- scoped
+    exactly to those four, not a general "find hallucinations" grader.
+    Field names deliberately match ScenarioScore.unsupported_claim_patterns'
+    own Literal values so a caller can compare the two detectors' outputs
+    directly, field for field."""
+
+    sign_dropping: bool
+    hedge_then_retract: bool
+    residual_self_contradiction: bool
+    fact_doubling: bool
+
+
+def _format_grading_prompt(prose: str, evidence: _Evidence, known_gap: float) -> str:
+    """Builds a compact ground-truth summary (deliberately NOT a reuse of
+    src/explainer.py's own _format_evidence_prompt, which is a private
+    function building a DIFFERENT prompt for a DIFFERENT purpose --
+    narrating evidence to a stakeholder, not grading a narration against
+    it) plus the exact, precisely-worded definition of all four patterns,
+    matching decisions 14/30/32's own descriptions."""
+    lines: list[str] = ["## Real evidence (ground truth, computed deterministically)"]
+
+    lines.append("Reconciled causes:")
+    if evidence.reconciliation:
+        for item in evidence.reconciliation:
+            lines.append(f"- {item.cause} | dollar_impact={item.dollar_impact:+.2f}")
+    else:
+        lines.append("- None.")
+
+    lines.append("Self-consistency issues:")
+    if evidence.self_consistency_issues:
+        for issue in evidence.self_consistency_issues:
+            lines.append(
+                f"- source={issue.source} declared_field={issue.declared_field} "
+                f"dollar_impact={issue.dollar_impact:+.2f}"
+            )
+    else:
+        lines.append("- None.")
+
+    lines.append("Definitional differences:")
+    if evidence.definition_differences:
+        for d in evidence.definition_differences:
+            lines.append(f"- field={d.field} source_a={d.source_a_value!r} source_b={d.source_b_value!r}")
+    else:
+        lines.append("- None.")
+
+    lines.append("SQL structural differences:")
+    if evidence.sql_differences:
+        for s in evidence.sql_differences:
+            lines.append(f"- category={s.category} | {s.description}")
+    else:
+        lines.append("- None.")
+
+    lines.append("Data-quality issues:")
+    if evidence.data_quality_issues:
+        for q in evidence.data_quality_issues:
+            lines.append(f"- category={q.category} | dollar_impact={q.dollar_impact:+.2f}")
+    else:
+        lines.append("- None.")
+
+    lines.append(f"Real known_gap (the true total dollar difference): {known_gap:+.2f}")
+
+    evidence_block = "\n".join(lines)
+
+    return (
+        "You are a precise, narrow QA checker. You are given the REAL, deterministically-"
+        "computed evidence for one investigation, and a RESPONSE an AI system wrote "
+        "narrating that evidence to a business stakeholder. Your ONLY job is to check whether "
+        "the RESPONSE exhibits any of four SPECIFIC, precisely-defined defect patterns -- do "
+        "not flag anything else, and do not act as a general hallucination detector.\n\n"
+        f"{evidence_block}\n\n"
+        "## Response under review\n"
+        f"{prose}\n\n"
+        "Check for exactly these four patterns, each against the real evidence above:\n\n"
+        "1. sign_dropping: a NEGATIVE dollar_impact figure from the real evidence is stated "
+        "in the response as a bare POSITIVE magnitude, with no minus sign, no parentheses, "
+        "and no qualifying word ('reduces', 'offsets', 'negative', 'decreases', or similar) "
+        "anywhere near it.\n"
+        "2. hedge_then_retract: the response introduces language implying a cause exists in "
+        "an evidence category that is actually EMPTY above (e.g. 'we identified another "
+        "cause... however, this cause does not exist'), rather than simply omitting or "
+        "stating 'none' for that empty category.\n"
+        "3. residual_self_contradiction: the response states language like 'other causes may "
+        "exist', 'further investigation is needed', or 'only a portion of the gap' about a "
+        "data-quality cause that IS present in the real evidence above -- whether or not the "
+        "response ALSO correctly states elsewhere that a nonzero residual does not diminish "
+        "that cause's completeness. Flag this whenever the violating language appears for a "
+        "data-quality cause that is genuinely present, regardless of whether it is also "
+        "correctly stated elsewhere.\n"
+        "4. fact_doubling: the response describes ONE real cause from the evidence above as "
+        "if it were TWO separate causes, and/or states an explicit total dollar figure that "
+        "does not match the real known_gap value given above.\n\n"
+        "Respond with ONLY a single JSON object, no other text before or after it, no "
+        "markdown code fences, with EXACTLY these four boolean fields: "
+        '{"sign_dropping": true/false, "hedge_then_retract": true/false, '
+        '"residual_self_contradiction": true/false, "fact_doubling": true/false}'
+    )
+
+
+_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
+
+def score_scenario_llm_graded(entry: BenchmarkEntry, prose: str) -> LLMClaimGrading:
+    """Real API call -- a separate, narrowly-scoped LLM grader, given the
+    prose plus the real underlying evidence, asked specifically whether
+    the prose exhibits any of the four named unsupported-claim patterns.
+
+    Structured output (LLMClaimGrading), not free text -- the same
+    discipline this project has held for every other structured-output
+    requirement. Achieved via prompt-instructed JSON + manual pydantic
+    validation, NOT generate_structured's own response_schema/
+    response_format parameter: a real, live finding from this task's own
+    first attempt -- the configured free-tier model
+    (meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo, routed through the
+    provider's chat_completion endpoint) rejects the request outright
+    ('json_schema response format is not supported for model...'), a
+    provider/model limitation, not a bug in llm_client.py. This function
+    still gets fully validated, typed output -- it just gets there by
+    asking for JSON in the prompt and validating the returned text,
+    rather than relying on the provider's native structured-output
+    feature, which is unavailable for this specific model."""
+    evidence = assemble_investigation_evidence_for_benchmark(entry)
+    prompt = _format_grading_prompt(prose, evidence, entry.scenario.known_gap)
+    raw = generate_structured(prompt)
+    assert isinstance(raw, str)
+    cleaned = _JSON_FENCE_RE.sub("", raw).strip()
+    return LLMClaimGrading.model_validate_json(cleaned)
