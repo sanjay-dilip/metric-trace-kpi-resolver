@@ -24,6 +24,13 @@ from tests.fixtures.scenarios import (
     CASE_9_MISSING_PARTITION,
     CASE_10_REFERENTIAL_INTEGRITY,
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
+    CASE_15_DATE_FIELD_INFERRED_ONLY,
+    CASE_16_EXCLUDED_STATUSES_DECLARED,
+    CASE_17_JOIN_TYPE_EXCLUDED_STATUSES_INTERACTING,
+    CASE_18_JOIN_TYPE_ONLY,
+    CASE_19_DATE_FIELD_EXCLUDED_STATUSES_DECLARED,
+    CASE_20_STALE_EXTRACT_JOIN_COLLISION,
+    CASE_21_FILTER_ADD_DIRECTION,
 )
 from tests.fixtures.ambiguous_scenarios import (
     AMBIGUOUS_ACTIVE_USER_CONVENTION,
@@ -44,7 +51,8 @@ class BenchmarkEntry(BaseModel):
     """The underlying fixture, unmodified."""
 
     ground_truth_check_field: Literal[
-        "reconciliation", "data_quality_issues", "definition_differences", "none"
+        "reconciliation", "data_quality_issues", "definition_differences", "none",
+        "reconciliation_and_data_quality",
     ]
     """Which InvestigationEvidence field a scorer must inspect to determine
     whether the correct cause was found. "none" means no cause exists and
@@ -60,7 +68,19 @@ class BenchmarkEntry(BaseModel):
     found cause only appears in definition_differences (and/or
     sql_differences/self_consistency_issues) -- pointing a scorer at
     "reconciliation" for such a scenario would be actively wrong, not
-    just incomplete."""
+    just incomplete.
+
+    "reconciliation_and_data_quality" (Build 3, Day 4, Part 6, added for
+    CASE_20_STALE_EXTRACT_JOIN_COLLISION): Case 20 is the one committed
+    scenario where BOTH reconciliation (a real join_type cause) AND
+    data_quality_issues (a real, separate stale_extract cause) are
+    simultaneously populated and correct -- decision 17's own named
+    legibility risk, made real inside the scored benchmark set. Every
+    other field option here names exactly one InvestigationEvidence field
+    to check; this is the one deliberate exception, added because forcing
+    Case 20 into a single-field value would silently under-check the
+    scenario it exists specifically to test. A scorer must verify BOTH
+    fields' real findings are present in the response, not just one."""
 
     is_ambiguous: bool
     """Per decision 6's two-metric split (escalation recall vs.
@@ -171,6 +191,78 @@ BENCHMARK_ENTRIES: list[BenchmarkEntry] = [
         ground_truth_check_field="data_quality_issues",
         is_ambiguous=False,
         expected_behavior="answer",
+    ),
+    BenchmarkEntry(
+        scenario=CASE_15_DATE_FIELD_INFERRED_ONLY,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+        expected_behavior="answer",
+        notes="Single-cause, inferred-vs-inferred date_field, dollar_impact=100.0, matching known_gap exactly.",
+    ),
+    BenchmarkEntry(
+        scenario=CASE_16_EXCLUDED_STATUSES_DECLARED,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+        expected_behavior="answer",
+        notes="Single-cause, declared excluded_statuses, dollar_impact=300.0, matching known_gap exactly.",
+    ),
+    BenchmarkEntry(
+        scenario=CASE_17_JOIN_TYPE_EXCLUDED_STATUSES_INTERACTING,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+        expected_behavior="answer",
+        notes=(
+            "The first structural x definitional interacting pair in this project (decision "
+            "11's longest-standing untested gap, closed Build 3 Day 3 Part 9): a genuinely "
+            "overlapping orphan row, excluded by both join_type and excluded_statuses. Correct "
+            "answer is split across two reconciliation line items (excluded_statuses +150.0, "
+            "join_type +150.0) that sum to known_gap (300.0) together."
+        ),
+    ),
+    BenchmarkEntry(
+        scenario=CASE_18_JOIN_TYPE_ONLY,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+        expected_behavior="answer",
+        notes="Single-cause join_type on a new tickets/agents domain, dollar_impact=200.0, matching known_gap exactly.",
+    ),
+    BenchmarkEntry(
+        scenario=CASE_19_DATE_FIELD_EXCLUDED_STATUSES_DECLARED,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+        expected_behavior="answer",
+        notes=(
+            "First purely technical fixture to prove decision 12's date_field suppression at "
+            "confidence='high' (every prior technical proof was 'medium'). Correct answer is "
+            "split across two reconciliation line items (date_field -300.0, excluded_statuses "
+            "+200.0) that sum to known_gap (-100.0) together."
+        ),
+    ),
+    BenchmarkEntry(
+        scenario=CASE_20_STALE_EXTRACT_JOIN_COLLISION,
+        ground_truth_check_field="reconciliation_and_data_quality",
+        is_ambiguous=False,
+        expected_behavior="answer",
+        notes=(
+            "Decision 17's legibility risk made real inside the scored set: a join_type "
+            "reconciliation cause (dollar_impact=300.0) and a SEPARATE, real stale_extract "
+            "data-quality cause (dollar_impact=-200.0) on two different rows, not one "
+            "double-counted fact. unexplained_residual=-200.0 by design (data_quality_issues "
+            "is additive-only, decision-11-adjacent Build 2 Day 5 convention) -- this does NOT "
+            "mean the stale_extract cause is unfound; see decision 30's residual-framing "
+            "instruction, now shipped in _format_evidence_prompt (Build 3 Day 4 Part 1)."
+        ),
+    ),
+    BenchmarkEntry(
+        scenario=CASE_21_FILTER_ADD_DIRECTION,
+        ground_truth_check_field="reconciliation",
+        is_ambiguous=False,
+        expected_behavior="answer",
+        notes=(
+            "First technical (non-ambiguous) proof of apply_filter_correction's ADD path "
+            "(decision 20), on a new region-column schema. Single-cause, dollar_impact=200.0, "
+            "matching known_gap exactly."
+        ),
     ),
     BenchmarkEntry(
         scenario=AMBIGUOUS_REFUND_TIMING,
@@ -365,4 +457,16 @@ unexplained_residual=0.0), same as this docstring entry's own note above.
 6 real ambiguous scenarios now exist; 2 further topics are
 confirmed-blocked, not abandoned speculatively. The eventual total this
 benchmark's decision-6 split should target is an open question -- see
-CONTEXT.md, not settled by this docstring."""
+CONTEXT.md, not settled by this docstring.
+
+Build 3, Day 4, Part 6: 7 more entries added for Cases 15-21 (the finalized
+8-scenario technical-benchmark list's items 1-5, 7, 8, item 6/Case 14 still
+excluded per decisions 27/28) -- these existed as SCENARIOS members since
+Build 3 Day 3 Part 9 but had no BenchmarkEntry metadata at all until this
+gap was found and closed while building the first-pass eval scorer
+(tests/eval_scoring.py). BENCHMARK_ENTRIES now covers all 24 scenarios in
+the current benchmark (18 non-ambiguous + 6 ambiguous, decision 29's
+corrected count). CASE_20_STALE_EXTRACT_JOIN_COLLISION's entry uses the new
+"reconciliation_and_data_quality" ground_truth_check_field value (see that
+field's own docstring above) -- the one scenario where two different
+InvestigationEvidence fields both carry real, separate, correct findings."""
