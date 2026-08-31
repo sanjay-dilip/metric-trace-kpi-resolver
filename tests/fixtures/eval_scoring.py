@@ -70,7 +70,16 @@ no broader rewrite:
      explicit claimed "total X impact" that mismatches the scenario's
      real known_gap, matched directly against Case 4's own quoted
      output ('contribute a total dollar impact of +400.00' against a
-     real known_gap of 200.0)."""
+     real known_gap of 200.0).
+
+Build 3, Day 4, Part 8, Task 2 also built score_scenario_llm_graded (below)
+as a real, head-to-head alternative to the hand-written detector above.
+Decision 33 (Build 3, Day 4, Part 9): the hand-written detector, with the
+three fixes above, ships as the sole, authoritative unsupported-claim-rate
+check -- the LLM grader is dropped from the scoring pipeline (it was never
+wired into run_benchmark to begin with; see score_scenario_llm_graded's own
+docstring for the reasoning) and kept only as a documented, working,
+tested experiment, not deleted."""
 
 import re
 from typing import Literal
@@ -608,6 +617,18 @@ def score_scenario_llm_graded(entry: BenchmarkEntry, prose: str) -> LLMClaimGrad
     """Real API call -- a separate, narrowly-scoped LLM grader, given the
     prose plus the real underlying evidence, asked specifically whether
     the prose exhibits any of the four named unsupported-claim patterns.
+
+    DECISION 33 (docs/decisions.md, Build 3, Day 4, Part 9): NOT called
+    from run_benchmark's default path, and never will be without a new
+    decision overriding this one. A 6-scenario head-to-head comparison
+    against the hand-written detector (PR #136) found 4 false positives
+    across 6 calls -- hallucinated verdicts against evidence this function
+    was directly given -- against 0 for the hand-written detector on the
+    identical scenarios. This function, its prompt, and its tests remain
+    committed and working, kept as a documented experiment per this
+    project's own practice of naming rather than deleting a real,
+    tested-but-not-shipped result. Callable directly for ad hoc
+    comparison; not wired into any scored pipeline.
 
     Structured output (LLMClaimGrading), not free text -- the same
     discipline this project has held for every other structured-output
