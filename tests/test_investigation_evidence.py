@@ -64,6 +64,7 @@ from tests.fixtures.scenarios import (
     CASE_11_REFERENTIAL_INTEGRITY_SOURCE_B,
     CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION,
     CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES,
+    CASE_15_DATE_FIELD_INFERRED_ONLY,
     SCENARIOS,
 )
 
@@ -409,3 +410,23 @@ def test_case_14_full_pipeline_completes_with_a_real_but_large_residual():
     assert dollar_impacts["excluded_statuses"] == -300.0
     assert evidence.unexplained_residual == 650.0
     assert CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES not in SCENARIOS
+
+
+def test_case_15_fully_reconciles_single_cause_inferred_date_field():
+    """Case 15 (Build 3, Day 3, Part 7 -- finalized 8-scenario list, item
+    1): the first fixture with an inferred-vs-inferred (not declared-vs-
+    inferred) date_field cause, added directly to SCENARIOS since it
+    reconciles exactly, matching Cases 1-4/7's own standard -- unlike
+    Case 14, there is no schema-representation gap here (excluded_statuses
+    never differs at all, so apply_excluded_statuses_correction's lossy
+    "(none)" placeholder is never invoked)."""
+    evidence = assemble_investigation_evidence(CASE_15_DATE_FIELD_INFERRED_ONLY)
+    total = sum(item.dollar_impact for item in evidence.reconciliation)
+
+    assert [d.field for d in evidence.definition_differences] == ["date_field"]
+    assert evidence.sql_differences == []
+    assert len(evidence.reconciliation) == 1
+    assert evidence.reconciliation[0].computed_by == "single_cause_attribution"
+    assert total == CASE_15_DATE_FIELD_INFERRED_ONLY.known_gap == 100.0
+    assert evidence.unexplained_residual == 0.0
+    assert CASE_15_DATE_FIELD_INFERRED_ONLY in SCENARIOS

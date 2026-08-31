@@ -387,6 +387,39 @@ CASE_14_ORDERS = [
 ]
 
 
+# --- Case 15 (Build 3, Day 3, Part 7 -- finalized 8-scenario list, item 1):
+# date_field only, single-cause, INFERRED path. NEITHER side declares a
+# metric definition -- distinct from Case 3 (declared-vs-undeclared) and
+# Case 14 (declared-vs-undeclared, low-confidence excluded_statuses): this
+# is the first fixture where date_field's DefinitionDifference is
+# inferred-vs-inferred on BOTH legs, not declared-vs-inferred. Neither
+# side filters on status at all (zero status predicates on both sides),
+# so excluded_statuses infers "(none)"/low confidence identically on both
+# sides and never differs; both sides use SUM(amount) with no DISTINCT,
+# so aggregation infers "sum"/medium confidence identically on both sides
+# and never differs either -- date_field is the ONLY field that differs,
+# keeping this a genuine single-cause fixture, not an accidental
+# multi-cause one. New table schema (order_date + ship_date, no
+# created_at) since Case 3/14 already own the created_at pairing and this
+# item's whole point is a genuinely different reporting-period-cutoff
+# pair (order date vs. ship date), not a reused column pairing. ---
+def _build_orders_table_with_ship_date(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
+    con.execute(
+        "CREATE OR REPLACE TABLE orders "
+        "(order_id INTEGER, amount DOUBLE, status VARCHAR, order_date DATE, ship_date DATE)"
+    )
+    con.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
+
+
+CASE_15_ORDERS = [
+    (1, 100.0, "active", "2024-02-01", "2024-02-05"),  # both after cutoff -- counts both ways
+    (2, 200.0, "active", "2023-12-20", "2024-01-05"),  # order_date before cutoff, ship_date after
+    (3, 300.0, "active", "2024-01-10", "2023-12-28"),  # order_date after cutoff, ship_date before
+    (4, 150.0, "active", "2023-11-01", "2023-11-15"),  # both before cutoff -- counts neither way
+    (5, 250.0, "active", "2024-03-01", "2024-03-03"),  # both after cutoff -- counts both ways
+]
+
+
 # --- Ambiguous scenario proof-of-concept, Refund timing (Build 3, Day 2,
 # Part 3). Not a Build 2 data-quality/freshness cause and not a
 # declared-vs-inferred definitional cause -- both sides declare a real
@@ -615,6 +648,10 @@ def build_all() -> None:
         _seed_file(
             "case_14_date_field_low_confidence_excluded_statuses", side,
             (_build_orders_table_with_created_at, CASE_14_ORDERS),
+        )
+        _seed_file(
+            "case_15_date_field_inferred_only", side,
+            (_build_orders_table_with_ship_date, CASE_15_ORDERS),
         )
 
     _seed_file("case_05_unexplained_residual", "a", (_build_orders_table, CASE_5_ORDERS_A))
