@@ -8,7 +8,16 @@ No new pydantic schema for the output: plain text, per the standing
 decision from the original project brief. The LLM's only job is narrating
 facts that already exist in `evidence`; it must not compute a number, infer
 a cause, or invent SQL lineage of its own (the project's deterministic-
-core-LLM-at-the-edge convention, now exercised for the first time)."""
+core-LLM-at-the-edge convention, now exercised for the first time).
+
+Build 3, Day 4, Part 1: data_quality_issues (present on InvestigationEvidence
+since Build 2, Day 1, populated since Build 2, Day 5) is now rendered too,
+with explicit prompt instructions covering the two risks decisions 14 and 17
+(docs/decisions.md) named: never sum a data_quality_issues dollar figure
+against a reconciliation figure as if additive (decision 17), and never
+describe an investigation as "no cause found" when reconciliation is empty
+but data_quality_issues is not (decision 14's defect-1 pattern, applied to
+this field)."""
 
 from src.llm_client import generate_structured
 from src.schema import InvestigationEvidence
@@ -59,9 +68,57 @@ def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
         lines.append("- None.")
 
     lines.append("")
+    lines.append(
+        "## Data-quality issues (freshness/completeness defects, computed independently of the "
+        "reconciled causes above -- see the instructions below for how these relate)"
+    )
+    if evidence.data_quality_issues:
+        for q in evidence.data_quality_issues:
+            lines.append(
+                f"- category={q.category} | source={q.source} | {q.description} "
+                f"| confidence={q.confidence} | dollar_impact={q.dollar_impact:+.2f}"
+            )
+    else:
+        lines.append("- None.")
+
+    lines.append("")
     lines.append(f"## Unexplained residual\n{evidence.unexplained_residual:+.2f}")
 
     evidence_block = "\n".join(lines)
+
+    instructions = [
+        "Instructions:",
+        "- Reference only the facts listed above. Do not invent a cause, mechanism, or "
+        "dollar figure that is not explicitly present here.",
+        "- State the unexplained residual honestly. If it is not (near) zero, say plainly "
+        "that the gap is not fully explained by the causes found -- do not paper over it, "
+        "and do not guess at a plausible-sounding reason to fill the gap.",
+        "- If there are no reconciled causes, no data-quality issues, and a nonzero residual, "
+        "say explicitly that no cause was identified and the entire gap remains unexplained. "
+        "Do not fabricate a cause to make the explanation feel complete.",
+        "- If there are no reconciled causes, no data-quality issues, and the residual is "
+        "zero, say plainly that the two sources agree and no discrepancy was found.",
+    ]
+
+    if evidence.data_quality_issues and evidence.reconciliation:
+        instructions.append(
+            "- The reconciled causes and the data-quality issues above are SEPARATE, "
+            "INDEPENDENTLY-COMPUTED findings. They may describe overlapping or related "
+            "underlying facts. Do NOT add a data-quality issue's dollar_impact to a "
+            "reconciled cause's dollar_impact as if they were two additive causes -- report "
+            "them as two distinct findings, each in its own right, and do not state or imply "
+            "a combined total between them."
+        )
+    elif evidence.data_quality_issues and not evidence.reconciliation:
+        instructions.append(
+            "- There are no reconciled causes above, but this does NOT mean nothing was "
+            "found. A real, quantified cause is listed under data-quality issues. Explain "
+            "that cause normally, the way you would explain any other finding -- do not "
+            "describe this investigation as having found no cause, and do not say the gap "
+            "is entirely unexplained when a data-quality issue accounts for it."
+        )
+
+    instructions.append("- Write 2-4 short paragraphs in plain business language, no markdown headers.")
 
     return (
         "You are explaining the results of a deterministic KPI-discrepancy investigation "
@@ -69,19 +126,7 @@ def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
         "code (SQL parsing, metric-definition comparison, and real query execution) before "
         "you were called -- you are narrating these facts, not computing or discovering "
         "anything new.\n\n"
-        f"{evidence_block}\n\n"
-        "Instructions:\n"
-        "- Reference only the facts listed above. Do not invent a cause, mechanism, or "
-        "dollar figure that is not explicitly present here.\n"
-        "- State the unexplained residual honestly. If it is not (near) zero, say plainly "
-        "that the gap is not fully explained by the causes found -- do not paper over it, "
-        "and do not guess at a plausible-sounding reason to fill the gap.\n"
-        "- If there are no reconciled causes and a nonzero residual, say explicitly that no "
-        "cause was identified and the entire gap remains unexplained. Do not fabricate a "
-        "cause to make the explanation feel complete.\n"
-        "- If there are no reconciled causes and the residual is zero, say plainly that the "
-        "two sources agree and no discrepancy was found.\n"
-        "- Write 2-4 short paragraphs in plain business language, no markdown headers."
+        f"{evidence_block}\n\n" + "\n".join(instructions)
     )
 
 
