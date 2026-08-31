@@ -2,7 +2,7 @@
 
 An investigation copilot that takes a known KPI discrepancy between two dashboards and produces an evidence-backed reconciliation — which differences explain the gap, how much each contributes in dollars, and what remains unresolved.
 
-**Status:** In development. Deterministic core, single-agent baseline, and data-quality checks are built and tested (88/88 tests passing). Benchmark authoring and the evaluation harness are in progress.
+**Status:** In development. Deterministic core, single-agent baseline, and data-quality checks are built and tested (135/135 tests passing). Benchmark authoring and the evaluation harness are in progress.
 
 ---
 
@@ -30,7 +30,7 @@ I wanted to practice an end-to-end investigation-style analytics project where c
 - Deterministic data-quality pre-checks — stale extract, missing partition, referential-integrity — computed independently of the LLM, with dollar impact measured by re-running the same query against complete data.
 - A reconciliation engine that attributes dollars to each cause using exact single-cause subtraction when only one cause is present, and pairwise counterfactual (Shapley-style) averaging when two causes interact on the same rows — proven against real data to differ meaningfully from naive fixed-order subtraction.
 - Cross-tool collision handling: several of the tools above can independently flag the same underlying fact (e.g. a `COUNT` vs `COUNT DISTINCT` mismatch showing up in two different diffs). Two real collisions were found by execution and resolved with explicit suppression rules so reconciled dollars aren't double-counted.
-- An LLM explainer that turns the assembled evidence into plain-English prose, manually verified across all 13 test scenarios — including two scenarios purpose-built to tempt it into inventing an unsupported cause — to reference only what's actually in the evidence.
+- An LLM explainer that turns the assembled evidence into plain-English prose, manually verified against the 7 original fixture scenarios — including two scenarios purpose-built to tempt it into inventing an unsupported cause — to reference only what's actually in the evidence. The 11 scenarios added since have not been re-checked against the explainer.
 
 ---
 
@@ -41,7 +41,7 @@ I wanted to practice an end-to-end investigation-style analytics project where c
 - **DuckDB** — row-level synthetic seed data backing every test scenario
 - **Hugging Face Inference Providers** (`huggingface_hub`) — the LLM explainer (`meta-llama/Llama-3.1-8B-Instruct`)
 - **tenacity** — retry/backoff around the LLM client
-- **pytest** — 88 tests across schema validation, each tool in isolation, and full pipeline assembly
+- **pytest** — 135 tests across schema validation, each tool in isolation, and full pipeline assembly
 - **python-dotenv** — local secrets (`HF_TOKEN`)
 - Installed but not yet in use: **LangGraph** (multi-agent orchestration, planned for the next build) and **Streamlit** (demo UI, planned after that)
 
@@ -63,7 +63,7 @@ I wanted to practice an end-to-end investigation-style analytics project where c
 
 ## Data Source
 
-All 13 scenarios are hand-authored synthetic fixtures (`tests/fixtures/scenarios.py`), each backed by real, queryable DuckDB data (`scripts/build_seed_data.py`, written to `data/sample/`). No external or API data is used. Every scenario is deliberately constructed around one confirmed root cause (or, for the negative control, no cause at all), and each scenario's reported values and known gap are derived by actually executing its SQL against its seed data — not hand-typed — so the benchmark numbers reconcile against something real rather than an assumed target.
+All 18 scenarios in the scored benchmark set (`SCENARIOS`, `tests/fixtures/scenarios.py`) are hand-authored synthetic fixtures, each backed by real, queryable DuckDB data (`scripts/build_seed_data.py`, written to `data/sample/`). No external or API data is used. Every scenario is deliberately constructed around one confirmed root cause (or, for the negative control, no cause at all), and each scenario's reported values and known gap are derived by actually executing its SQL against its seed data — not hand-typed — so the benchmark numbers reconcile against something real rather than an assumed target. (Three additional fixtures exist in the same file to prove specific cross-tool collision mechanisms but are deliberately kept out of `SCENARIOS` — see `docs/decisions.md`, decisions 17–18 and 27.)
 
 ---
 
@@ -71,10 +71,10 @@ All 13 scenarios are hand-authored synthetic fixtures (`tests/fixtures/scenarios
 
 A scored accuracy benchmark (root-cause accuracy, human-escalation accuracy, unsupported-claim rate across 20-30 scenarios) is the next build and isn't done yet — the numbers below are what's been verified so far, mostly through the test suite and direct execution rather than a formal scored evaluation:
 
-- **88/88 tests passing**, covering schema validation, each deterministic tool in isolation, cross-tool collision suppression, and full end-to-end evidence assembly.
+- **135/135 tests passing**, covering schema validation, each deterministic tool in isolation, cross-tool collision suppression, and full end-to-end evidence assembly.
 - Across every scenario with a real, findable cause, the reconciliation engine's dollar attributions sum to exactly the known gap (0% residual) — proven by execution, not just by an algebraic sum-check that would pass regardless of whether the attribution itself was meaningful. The one true negative-control scenario (two dashboards that genuinely agree) correctly reports no cause and no gap.
 - Two real cross-tool evidence collisions were deliberately proven by execution (not just reasoned about) before being fixed: a `referential_integrity` finding colliding with a `join_type` finding on the same orphaned row, and a `filter` finding colliding with an `excluded_statuses` finding on the same status column. Both are recorded in `docs/decisions.md` (decisions 17-18) with the actual dollar figures that exposed them.
-- The LLM explainer was manually checked against all 13 scenarios and did not fabricate a cause or a dollar figure on any of them, including the two scenarios specifically built to tempt it (a 100%-unexplained case and the negative control). Two smaller, real model-quality issues were found and documented rather than fixed: it once dropped a minus sign narrating a negative dollar figure, and once described an empty finding category as a cause that "doesn't exist" instead of simply omitting it.
+- The LLM explainer was manually checked against the 7 original fixture scenarios and did not fabricate a cause or a dollar figure on any of them, including the two scenarios specifically built to tempt it (a 100%-unexplained case and the negative control). Two smaller, real model-quality issues were found and documented rather than fixed: it once dropped a minus sign narrating a negative dollar figure, and once described an empty finding category as a cause that "doesn't exist" instead of simply omitting it. The 11 scenarios added since (data-quality checks and the Build 3 technical-benchmark set) have not been re-run through the explainer.
 
 ---
 
@@ -137,8 +137,8 @@ metric-trace-kpi-resolver/
 │   ├── llm_client.py           # Provider-isolated LLM client (Hugging Face Inference Providers)
 │   └── explainer.py            # Turns InvestigationEvidence into plain-English prose
 │
-├── tests/                     # 88 tests, one file per module above
-│   └── fixtures/scenarios.py   # 13 hand-authored, DuckDB-backed test scenarios
+├── tests/                     # 135 tests, one file per module above
+│   └── fixtures/scenarios.py   # 18 hand-authored, DuckDB-backed test scenarios (SCENARIOS)
 │
 ├── scripts/
 │   └── build_seed_data.py      # Builds every scenario's row-level DuckDB seed data
