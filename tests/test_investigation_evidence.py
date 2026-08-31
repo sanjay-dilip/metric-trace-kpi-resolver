@@ -65,6 +65,12 @@ from tests.fixtures.scenarios import (
     CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION,
     CASE_14_DATE_FIELD_LOW_CONFIDENCE_EXCLUDED_STATUSES,
     CASE_15_DATE_FIELD_INFERRED_ONLY,
+    CASE_16_EXCLUDED_STATUSES_DECLARED,
+    CASE_17_JOIN_TYPE_EXCLUDED_STATUSES_INTERACTING,
+    CASE_18_JOIN_TYPE_ONLY,
+    CASE_19_DATE_FIELD_EXCLUDED_STATUSES_DECLARED,
+    CASE_20_STALE_EXTRACT_JOIN_COLLISION,
+    CASE_21_FILTER_ADD_DIRECTION,
     SCENARIOS,
 )
 
@@ -430,3 +436,137 @@ def test_case_15_fully_reconciles_single_cause_inferred_date_field():
     assert total == CASE_15_DATE_FIELD_INFERRED_ONLY.known_gap == 100.0
     assert evidence.unexplained_residual == 0.0
     assert CASE_15_DATE_FIELD_INFERRED_ONLY in SCENARIOS
+
+
+def test_case_16_fully_reconciles_single_cause_declared_excluded_statuses():
+    """Case 16 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+    2): a clean cross-source declared-vs-declared excluded_statuses diff,
+    a second data point alongside Case 4 at a different scale, with no
+    self-consistency issue on either side."""
+    evidence = assemble_investigation_evidence(CASE_16_EXCLUDED_STATUSES_DECLARED)
+    total = sum(item.dollar_impact for item in evidence.reconciliation)
+
+    assert [d.field for d in evidence.definition_differences] == ["excluded_statuses"]
+    assert evidence.sql_differences == []
+    assert evidence.self_consistency_issues == []
+    assert len(evidence.reconciliation) == 1
+    assert evidence.reconciliation[0].computed_by == "single_cause_attribution"
+    assert total == CASE_16_EXCLUDED_STATUSES_DECLARED.known_gap == 300.0
+    assert evidence.unexplained_residual == 0.0
+    assert CASE_16_EXCLUDED_STATUSES_DECLARED in SCENARIOS
+
+
+def test_case_17_fully_reconciles_interacting_join_type_and_excluded_statuses():
+    """Case 17 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+    3): the first structural x definitional interacting pair anywhere in
+    this project, closing decision 11's longest-standing untested scope
+    gap. order_id=3 is the genuinely overlapping row both causes act on
+    (an orphan FK row that is ALSO excluded by source_b's declared
+    excluded_statuses). Real Shapley split: 150.0/150.0, summing to
+    known_gap exactly."""
+    evidence = assemble_investigation_evidence(CASE_17_JOIN_TYPE_EXCLUDED_STATUSES_INTERACTING)
+    total = sum(item.dollar_impact for item in evidence.reconciliation)
+
+    assert [d.field for d in evidence.definition_differences] == ["excluded_statuses"]
+    assert [d.category for d in evidence.sql_differences] == ["join_type"]
+    assert [item.computed_by for item in evidence.reconciliation] == [
+        "shapley_pair_attribution",
+        "shapley_pair_attribution",
+    ]
+    dollar_impacts = {item.cause.split(":")[0].split(" ")[0]: item.dollar_impact for item in evidence.reconciliation}
+    assert dollar_impacts["excluded_statuses"] == 150.0
+    assert dollar_impacts["source_a"] == 150.0  # join_type's cause text starts with "source_a uses ..."
+    assert total == CASE_17_JOIN_TYPE_EXCLUDED_STATUSES_INTERACTING.known_gap == 300.0
+    assert evidence.unexplained_residual == 0.0
+    assert CASE_17_JOIN_TYPE_EXCLUDED_STATUSES_INTERACTING in SCENARIOS
+
+
+def test_case_18_fully_reconciles_single_cause_join_type_new_domain():
+    """Case 18 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+    4): a second real join_type data point on a wholly different table
+    pairing (tickets/agents, not orders/customers) from Case 1 -- same
+    orphan-fact-row mechanism, different domain."""
+    evidence = assemble_investigation_evidence(CASE_18_JOIN_TYPE_ONLY)
+    total = sum(item.dollar_impact for item in evidence.reconciliation)
+
+    assert evidence.definition_differences == []
+    assert [d.category for d in evidence.sql_differences] == ["join_type"]
+    assert len(evidence.reconciliation) == 1
+    assert evidence.reconciliation[0].computed_by == "single_cause_attribution"
+    assert total == CASE_18_JOIN_TYPE_ONLY.known_gap == 200.0
+    assert evidence.unexplained_residual == 0.0
+    assert CASE_18_JOIN_TYPE_ONLY in SCENARIOS
+
+
+def test_case_19_fully_reconciles_declared_date_field_excluded_statuses_high_confidence():
+    """Case 19 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+    5): a technical mirror of AMBIGUOUS_REVENUE_RECOGNITION's own shape --
+    both declared, high confidence, no business-rule ambiguity. Also the
+    first purely technical fixture to exercise decision 12's date_field
+    suppression at confidence="high" (Case 3/14/15 were all "medium")."""
+    evidence = assemble_investigation_evidence(CASE_19_DATE_FIELD_EXCLUDED_STATUSES_DECLARED)
+    total = sum(item.dollar_impact for item in evidence.reconciliation)
+
+    assert [d.field for d in evidence.definition_differences] == ["date_field", "excluded_statuses"]
+    assert evidence.sql_differences == []
+    assert [item.computed_by for item in evidence.reconciliation] == [
+        "shapley_pair_attribution",
+        "shapley_pair_attribution",
+    ]
+    dollar_impacts = {item.cause.split(":")[0]: item.dollar_impact for item in evidence.reconciliation}
+    assert dollar_impacts["date_field"] == -300.0
+    assert dollar_impacts["excluded_statuses"] == 200.0
+    assert total == CASE_19_DATE_FIELD_EXCLUDED_STATUSES_DECLARED.known_gap == -100.0
+    assert evidence.unexplained_residual == 0.0
+    assert CASE_19_DATE_FIELD_EXCLUDED_STATUSES_DECLARED in SCENARIOS
+
+
+def test_case_20_join_type_reconciles_while_data_quality_stays_additive_only():
+    """Case 20 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+    7): the first fixture in SCENARIOS with BOTH a real reconciliation
+    entry (join_type, from an orphan row present in both sides' actual
+    data) AND a real data_quality_issues entry (stale_extract, from a
+    DIFFERENT row missing from source_a's as-delivered snapshot) --
+    deliberately dispatched, unlike Case 1/12. The two facts are
+    independent (different rows), so join_type alone does not explain
+    known_gap -- unexplained_residual (-200.0) is a real, honest number
+    that happens to equal the unfolded data-quality dollar_impact exactly
+    for this fixture's numbers (decision 17's coexistence risk, not a
+    double-count: naively summing reconciliation's +300.0 and data-
+    quality's -200.0 would actually land on known_gap correctly here,
+    which is NOT true in general and must not be assumed)."""
+    evidence = assemble_investigation_evidence(CASE_20_STALE_EXTRACT_JOIN_COLLISION)
+
+    assert evidence.definition_differences == []
+    assert [d.category for d in evidence.sql_differences] == ["join_type"]
+    assert len(evidence.reconciliation) == 1
+    assert evidence.reconciliation[0].computed_by == "single_cause_attribution"
+    assert evidence.reconciliation[0].dollar_impact == 300.0
+
+    assert len(evidence.data_quality_issues) == 1
+    issue = evidence.data_quality_issues[0]
+    assert issue.category == "stale_extract"
+    assert issue.source == "a"
+    assert issue.dollar_impact == -200.0
+
+    assert CASE_20_STALE_EXTRACT_JOIN_COLLISION.known_gap == 100.0
+    assert evidence.unexplained_residual == -200.0
+    assert CASE_20_STALE_EXTRACT_JOIN_COLLISION in SCENARIOS
+
+
+def test_case_21_fully_reconciles_filter_add_direction():
+    """Case 21 (Build 3, Day 3, Part 9 -- finalized 8-scenario list, item
+    8): apply_filter_correction's ADD direction (decision 20), proven
+    outside the ambiguous set for the first time -- source_a is missing a
+    real, non-status filter (`region`) that source_b has; correcting A
+    toward B adds the predicate."""
+    evidence = assemble_investigation_evidence(CASE_21_FILTER_ADD_DIRECTION)
+    total = sum(item.dollar_impact for item in evidence.reconciliation)
+
+    assert evidence.definition_differences == []
+    assert [d.category for d in evidence.sql_differences] == ["filter"]
+    assert len(evidence.reconciliation) == 1
+    assert evidence.reconciliation[0].computed_by == "single_cause_attribution"
+    assert total == CASE_21_FILTER_ADD_DIRECTION.known_gap == 200.0
+    assert evidence.unexplained_residual == 0.0
+    assert CASE_21_FILTER_ADD_DIRECTION in SCENARIOS
