@@ -6,8 +6,9 @@ run_benchmark() verification is reported by hand in the PR, not automated
 here -- matching this project's own standing practice (test_explainer.py's
 own docstring states the same split for _format_evidence_prompt)."""
 
+from tests.fixtures import eval_scoring
 from tests.fixtures.benchmark_entries import BENCHMARK_ENTRIES
-from tests.fixtures.eval_scoring import score_scenario
+from tests.fixtures.eval_scoring import LLMClaimGrading, score_scenario, score_scenario_llm_graded
 
 _ENTRY_BY_ID = {e.scenario.scenario_id: e for e in BENCHMARK_ENTRIES}
 
@@ -402,3 +403,40 @@ def test_does_not_flag_fact_doubling_when_no_total_is_claimed():
     score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.")
     assert "fact_doubling" not in score.unsupported_claim_patterns
     assert "fact_doubling" in score.checks_run
+
+
+# --- Build 3, Day 4, Part 8, Task 2: mocked test for the LLM-graded ---
+# --- checker's JSON-parsing logic -- the LLM call itself is mocked here ---
+# --- (Level 1 of the workflow guide's live-API-test policy), matching ---
+# --- test_explainer.py's own convention. Real API verification is Task 3, ---
+# --- reported by hand in the PR, not automated here. ---
+
+
+def test_llm_graded_parses_clean_json_response(monkeypatch):
+    def fake_generate_structured(prompt, response_schema=None):
+        assert response_schema is None  # prompt-instructed JSON, not response_format
+        return '{"sign_dropping": false, "hedge_then_retract": false, "residual_self_contradiction": true, "fact_doubling": false}'
+
+    monkeypatch.setattr(eval_scoring, "generate_structured", fake_generate_structured)
+
+    entry = _ENTRY_BY_ID["case_20_stale_extract_join_collision"]
+    result = score_scenario_llm_graded(entry, "some prose")
+
+    assert result == LLMClaimGrading(
+        sign_dropping=False, hedge_then_retract=False, residual_self_contradiction=True, fact_doubling=False
+    )
+
+
+def test_llm_graded_strips_markdown_json_fence(monkeypatch):
+    """Real models sometimes wrap JSON in ```json ... ``` despite explicit
+    instructions not to -- the fence-stripping regex must handle this."""
+
+    def fake_generate_structured(prompt, response_schema=None):
+        return '```json\n{"sign_dropping": true, "hedge_then_retract": false, "residual_self_contradiction": false, "fact_doubling": false}\n```'
+
+    monkeypatch.setattr(eval_scoring, "generate_structured", fake_generate_structured)
+
+    entry = _ENTRY_BY_ID["case_02_multi_cause"]
+    result = score_scenario_llm_graded(entry, "some prose")
+
+    assert result.sign_dropping is True
