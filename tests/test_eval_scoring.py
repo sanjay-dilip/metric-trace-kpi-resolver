@@ -195,10 +195,12 @@ def test_does_not_flag_residual_self_contradiction_on_clean_prose():
     assert "residual_self_contradiction" not in score.unsupported_claim_patterns
 
 
-def test_does_not_flag_residual_self_contradiction_when_only_violating_phrase_present():
-    """A response that only ever violates the constraint (never recites it
-    correctly) is a different, not-yet-named defect shape -- this pattern
-    specifically means co-occurrence, not either phrase alone."""
+def test_flags_residual_self_contradiction_on_a_one_sided_violation():
+    """Build 3, Day 4, Part 8, Task 1 fix: a response that only ever
+    violates the constraint (never recites it correctly) used to be
+    missed entirely, since the original design required co-occurrence.
+    Decision 32's own fresh Case 20 re-test found exactly this shape live
+    -- a bare violating phrase is now sufficient on its own."""
     entry = _ENTRY_BY_ID["case_20_stale_extract_join_collision"]
     prose = (
         "A join-type difference has a dollar impact of $300.00. A stale extract on "
@@ -206,7 +208,7 @@ def test_does_not_flag_residual_self_contradiction_when_only_violating_phrase_pr
         "yet accounted for."
     )
     score = score_scenario(entry, prose)
-    assert "residual_self_contradiction" not in score.unsupported_claim_patterns
+    assert "residual_self_contradiction" in score.unsupported_claim_patterns
 
 
 def test_escalation_status_always_not_gradable():
@@ -227,10 +229,11 @@ def test_checks_run_omits_patterns_with_no_applicable_evidence():
     but it DOES have a real empty-vs-populated category split (sql_differences
     and reconciliation are non-empty; definition_differences,
     self_consistency_issues, and data_quality_issues are all empty), so
-    hedge_then_retract legitimately does run."""
+    hedge_then_retract legitimately does run. fact_doubling always runs
+    (Build 3, Day 4, Part 8), the same way root_cause always does."""
     entry = _ENTRY_BY_ID["case_01_join_type"]
     score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.")
-    assert score.checks_run == ["root_cause", "hedge_then_retract"]
+    assert score.checks_run == ["root_cause", "fact_doubling", "hedge_then_retract"]
     assert "sign_dropping" not in score.checks_run
     assert "residual_self_contradiction" not in score.checks_run
 
@@ -313,3 +316,89 @@ def test_violating_phrase_negation_is_not_flagged_as_self_contradiction():
     )
     score = score_scenario(entry, prose)
     assert "residual_self_contradiction" not in score.unsupported_claim_patterns
+
+
+# --- Build 3, Day 4, Part 8, Task 1: regression tests for the three gaps ---
+# --- decision 32's fresh re-test diagnosed. ---
+
+
+def test_case_10_compound_negation_no_longer_false_positives():
+    """The exact real false positive decision 32 found: a compound 'not X
+    or that Y' construction where the negating word sits well outside the
+    old 20-character window. Modeled directly on Case 10's own fresh
+    live-verification quote."""
+    entry = _ENTRY_BY_ID["case_10_referential_integrity"]
+    prose = (
+        "This data-quality issue is a confirmed cause of the discrepancy, and it fully "
+        "explains the gap. The unexplained residual is +$300.00, but this is not evidence "
+        "that additional causes exist or that further investigation is needed. The "
+        "data-quality issue is a complete and confirmed finding in its own right."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" not in score.unsupported_claim_patterns
+
+
+def test_case_10_negation_guard_still_catches_a_real_short_distance_violation():
+    """Regression guard: the switch from a fixed window to sentence-scoping
+    must not lose the original, already-proven-working short-distance
+    case -- a genuine violation with no negation anywhere nearby must
+    still be flagged."""
+    entry = _ENTRY_BY_ID["case_10_referential_integrity"]
+    prose = (
+        "This data-quality issue is a confirmed cause, but only accounts for a portion "
+        "of the gap. There may be other factors at play."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" in score.unsupported_claim_patterns
+
+
+def test_case_20_one_sided_violation_now_detected_from_real_fresh_prose():
+    """Modeled directly on Case 20's own fresh live-verification quote
+    (decision 32): a pure, one-sided violation with no correcting phrase
+    anywhere in the response."""
+    entry = _ENTRY_BY_ID["case_20_stale_extract_join_collision"]
+    prose = (
+        "The unexplained residual is -$200.00. This means that the reconciled causes "
+        "and data-quality issues above do not fully explain the gap, and there may be "
+        "other underlying causes that have not been identified. The unexplained residual "
+        "remains, and further investigation is needed to fully understand the underlying "
+        "causes of the gap."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" in score.unsupported_claim_patterns
+
+
+def test_detects_fact_doubling_on_realistic_prose():
+    """Modeled directly on Case 4's own fresh live-verification quote
+    (decision 32): one real $200 cause narrated as two, summed to a
+    fabricated $400 total against a real known_gap of $200."""
+    entry = _ENTRY_BY_ID["case_04_governance_drift"]
+    prose = (
+        "The first cause is a self-consistency issue in source A's own SQL, where the "
+        "implemented value for 'excluded_statuses' contradicts its declared definition. "
+        "This discrepancy results in a dollar impact of +200.00. Additionally, there is "
+        "a reconciled cause where source A's SQL implements excluded_statuses='cancelled', "
+        "which contradicts its own declared 'cancelled, refunded'. This also results in a "
+        "dollar impact of +200.00. These causes contribute a total dollar impact of "
+        "+400.00, which fully explains the gap."
+    )
+    score = score_scenario(entry, prose)
+    assert "fact_doubling" in score.unsupported_claim_patterns
+
+
+def test_does_not_flag_fact_doubling_when_stated_total_matches_known_gap():
+    entry = _ENTRY_BY_ID["case_02_multi_cause"]
+    prose = (
+        "Two causes explain the gap: excluded_statuses contributes +$120.00 and "
+        "aggregation contributes -$100.00. Together, these causes contribute a total "
+        "dollar impact of +20.00, which fully explains the gap."
+    )
+    score = score_scenario(entry, prose)
+    assert "fact_doubling" not in score.unsupported_claim_patterns
+
+
+def test_does_not_flag_fact_doubling_when_no_total_is_claimed():
+    entry = _ENTRY_BY_ID["case_01_join_type"]
+    score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.")
+    assert "fact_doubling" not in score.unsupported_claim_patterns
+    assert "fact_doubling" in score.checks_run
