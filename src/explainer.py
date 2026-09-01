@@ -62,6 +62,11 @@ things: real issues found, checked-and-clean, or never checked at all --
 with a matching instruction telling the model explicitly that "never
 checked" is not evidence of cleanliness."""
 
+import re
+from typing import Literal
+
+from pydantic import BaseModel
+
 from src.llm_client import generate_structured
 from src.schema import InvestigationEvidence
 
@@ -82,10 +87,16 @@ the same way Build 3's future unsupported-claim-rate checker will need an
 exact string to test for, not a fuzzy substring guess."""
 
 
-def _format_evidence_prompt(evidence: InvestigationEvidence, data_quality_checked: bool = True) -> str:
-    """Every field of `evidence` is rendered into the prompt verbatim --
-    nothing added, nothing summarized away before the LLM sees it (per the
-    Day 8 task's own requirement).
+def _format_evidence_block(evidence: InvestigationEvidence, data_quality_checked: bool = True) -> str:
+    """Every field of `evidence` is rendered into a block of markdown-ish
+    text verbatim -- nothing added, nothing summarized away before the LLM
+    sees it (per the Day 8 task's own original requirement). Factored out
+    of `_format_evidence_prompt` (Build 4, Day 1, Part 1) so a second,
+    independent consumer -- `assess_confidence`'s own prompt, below -- can
+    see EXACTLY the same rendered evidence the explainer does, without
+    duplicating this rendering logic a second time. `_format_evidence_prompt`
+    itself is unchanged in behavior by this extraction; it now just calls
+    this function for the block it already built inline.
 
     data_quality_checked (Build 3, Day 5, Part 4): the real dispatch
     status for this scenario -- True when a data-quality/freshness check
@@ -96,7 +107,7 @@ def _format_evidence_prompt(evidence: InvestigationEvidence, data_quality_checke
     non-empty list already proves a check ran. Defaults to True -- the
     correct, backward-compatible default for every existing caller/test
     that doesn't construct a real Scenario and has no dispatch status to
-    thread through -- so the new "never checked" framing below is opt-in,
+    thread through -- so the "never checked" framing below is opt-in,
     not silently assumed."""
     lines: list[str] = []
 
@@ -167,7 +178,16 @@ def _format_evidence_prompt(evidence: InvestigationEvidence, data_quality_checke
     else:
         lines.append(f"## Unexplained residual\n{evidence.unexplained_residual:+.2f}")
 
-    evidence_block = "\n".join(lines)
+    return "\n".join(lines)
+
+
+def _format_evidence_prompt(evidence: InvestigationEvidence, data_quality_checked: bool = True) -> str:
+    """Builds the explainer's full prompt: `_format_evidence_block`'s
+    rendered facts, followed by the explainer-specific instructions (write
+    an explanation, the escalation check, etc.) -- see that function's own
+    docstring for `data_quality_checked`'s meaning, threaded straight
+    through unchanged."""
+    evidence_block = _format_evidence_block(evidence, data_quality_checked)
 
     instructions = [
         "Instructions:",
@@ -283,3 +303,94 @@ def explain_investigation(evidence: InvestigationEvidence, data_quality_checked:
     result = generate_structured(prompt)
     assert isinstance(result, str)
     return result
+
+
+class ConfidenceAssessment(BaseModel):
+    """Build 4, Day 1, Part 1: the confidence self-report step's output.
+    Schema-enforced structured output (this project's own standing rule),
+    not scraped from free text -- validated the same way
+    `LLMClaimGrading` (`tests/fixtures/eval_scoring.py`) is, via
+    prompt-instructed JSON + manual `model_validate_json`, not
+    `generate_structured`'s own `response_schema` parameter. That
+    parameter is deliberately NOT used here: decision 33 (`docs/decisions.md`)
+    already found, by live testing, that the configured free-tier model
+    rejects `response_format=json_schema` outright for this exact kind of
+    call -- the same provider/model limitation, not re-tested here since
+    it was already proven and the workaround it required is already this
+    project's own established pattern."""
+
+    confidence: Literal["low", "medium", "high"]
+    reason: str
+    """One sentence, not a paragraph -- bounded by the prompt instruction
+    itself (`_format_confidence_prompt`, below), not enforced by the
+    schema (a plain `str` field cannot enforce sentence count on its own;
+    the instruction is the only real bound, matching this project's own
+    "instruct in the prompt, don't over-engineer the schema" convention
+    for every other free-text field, e.g. `DataQualityIssue.description`)."""
+
+
+_CONFIDENCE_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
+
+def _format_confidence_prompt(evidence: InvestigationEvidence, data_quality_checked: bool = True) -> str:
+    """Build 4, Day 1, Part 1's own prompt -- reuses `_format_evidence_block`
+    (the SAME rendered facts `_format_evidence_prompt` builds for the
+    explainer) rather than duplicating that rendering a second time, per
+    this task's own explicit requirement. Deliberately does NOT reuse
+    `_format_evidence_prompt` itself: that function's own instructions
+    (write an explanation, the escalation check, the 2-4 paragraph
+    format) are explainer-specific and would directly contradict this
+    step's own "respond with only a JSON object" instruction if both were
+    present in the same prompt.
+
+    No explanation text is ever passed in here -- only the same rendered
+    evidence the explainer itself sees, never `explain_investigation`'s
+    own output. This is deliberate, not an oversight: decision 31
+    (`docs/decisions.md`) chose evidence-only recognition to test first,
+    before assuming a model needs to see its own prior explanation to
+    judge confidence in the underlying evidence. No label of any kind
+    (e.g. `BenchmarkEntry.is_ambiguous`) is available here either, same
+    standing convention decision 31's own probe established -- the whole
+    point is testing whether the model can tell without being told."""
+    evidence_block = _format_evidence_block(evidence, data_quality_checked)
+    return (
+        "You are assessing your OWN confidence in how complete and correct a deterministic "
+        "KPI-discrepancy investigation's findings are, based ONLY on the evidence below. "
+        "Every fact below was already computed by deterministic code (SQL parsing, "
+        "metric-definition comparison, and real query execution) -- you are not computing or "
+        "discovering anything new, only judging how confident a reader should be that these "
+        "findings are a complete and correct account of the discrepancy.\n\n"
+        f"{evidence_block}\n\n"
+        "Respond with ONLY a single JSON object, no other text before or after it, no "
+        "markdown code fences, with EXACTLY these two fields: "
+        '{"confidence": "low"|"medium"|"high", "reason": "..."}. '
+        'The "reason" field must be exactly one sentence, not a paragraph -- state the single '
+        "biggest factor driving your confidence level, in plain business language."
+    )
+
+
+def assess_confidence(evidence: InvestigationEvidence, data_quality_checked: bool = True) -> ConfidenceAssessment:
+    """Build 4, Day 1, Part 1: a new, independent step, deliberately not a
+    parameter folded into `explain_investigation` -- this needs to run as
+    its own distinct call, not the same generation as the explanation, so
+    it can be evaluated (and, in a future part, gated on) separately from
+    whether the explanation itself was produced.
+
+    Runs UNCONDITIONALLY on every scenario passed to it -- no Python-computed
+    eligibility gate deciding whether to bother calling this. Decision 31's
+    own evidence-only escalation probe already showed what a narrow,
+    criteria-based eligibility rule costs (it structurally excluded every
+    single-cause ambiguous scenario, Pattern 1, regardless of model
+    behavior) -- that shape is deliberately not reintroduced here. Whether
+    and where a cutoff gets built on top of this step's own output is a
+    separate, later decision, not made by this function.
+
+    data_quality_checked: same meaning as `explain_investigation`'s own
+    parameter (see `_format_evidence_block`'s docstring) -- threaded
+    through so both steps see the identical rendered evidence for the
+    same scenario, never a different rendering of it."""
+    prompt = _format_confidence_prompt(evidence, data_quality_checked)
+    raw = generate_structured(prompt)
+    assert isinstance(raw, str)
+    cleaned = _CONFIDENCE_JSON_FENCE_RE.sub("", raw).strip()
+    return ConfidenceAssessment.model_validate_json(cleaned)

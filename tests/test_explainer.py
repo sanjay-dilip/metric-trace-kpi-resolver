@@ -8,7 +8,15 @@ The manual, per-fixture grounding check against real Gemini output is Part
 from unittest.mock import MagicMock
 
 from src import explainer
-from src.explainer import ESCALATION_STATEMENT, _format_evidence_prompt, explain_investigation
+from src.explainer import (
+    ESCALATION_STATEMENT,
+    ConfidenceAssessment,
+    _format_confidence_prompt,
+    _format_evidence_block,
+    _format_evidence_prompt,
+    assess_confidence,
+    explain_investigation,
+)
 from src.schema import (
     DataQualityIssue,
     DefinitionDifference,
@@ -367,5 +375,97 @@ def test_explain_investigation_threads_data_quality_checked_through_to_the_promp
     monkeypatch.setattr(explainer, "generate_structured", fake_generate_structured)
 
     explain_investigation(_EMPTY_EVIDENCE, data_quality_checked=False)
+
+    assert "Not checked" in captured["prompt"]
+
+
+# --- Build 4, Day 1, Part 1: the confidence self-report step. ---
+
+
+def test_confidence_prompt_reuses_the_same_evidence_block_the_explainer_sees():
+    """The actual, explicit requirement: assess_confidence's own prompt
+    must be built from the SAME rendered facts _format_evidence_prompt
+    uses, not a re-derived or re-summarized version of them."""
+    evidence = _EMPTY_EVIDENCE.model_copy(
+        update={
+            "reconciliation": [
+                ReconciliationLineItem(cause="join_type mismatch", dollar_impact=300.0, computed_by="single_cause_attribution")
+            ]
+        }
+    )
+    block = _format_evidence_block(evidence)
+    confidence_prompt = _format_confidence_prompt(evidence)
+
+    assert block in confidence_prompt
+
+
+def test_confidence_prompt_does_not_include_explainer_specific_instructions():
+    """Deliberately does NOT reuse _format_evidence_prompt wholesale --
+    its own instructions (write an explanation, the escalation check, the
+    2-4 paragraph format) would directly contradict this step's own
+    "respond with only a JSON object" instruction if both were present."""
+    confidence_prompt = _format_confidence_prompt(_EMPTY_EVIDENCE)
+    assert "ESCALATION CHECK" not in confidence_prompt
+    assert "write 2-4 short paragraphs" not in confidence_prompt
+    assert ESCALATION_STATEMENT not in confidence_prompt
+
+
+def test_confidence_prompt_instructs_a_one_sentence_reason_and_json_only_response():
+    confidence_prompt = _format_confidence_prompt(_EMPTY_EVIDENCE)
+    assert "ONLY a single JSON object" in confidence_prompt
+    assert "must be exactly one sentence" in confidence_prompt
+
+
+def test_confidence_prompt_never_includes_explanation_text_or_a_ground_truth_label():
+    """No parameter path exists for either -- confirmed by signature
+    inspection via a direct call: assess_confidence/_format_confidence_prompt
+    take only `evidence` (and data_quality_checked), never prior
+    explanation text or an ambiguity label, matching decision 31's own
+    evidence-only, no-label-access convention."""
+    import inspect
+
+    params = list(inspect.signature(_format_confidence_prompt).parameters)
+    assert params == ["evidence", "data_quality_checked"]
+
+
+def test_assess_confidence_parses_clean_json_response(monkeypatch):
+    def fake_generate_structured(prompt, response_schema=None):
+        assert response_schema is None  # prompt-instructed JSON, not response_format (decision 33)
+        return '{"confidence": "high", "reason": "Every cause is declared, high-confidence, and the residual is zero."}'
+
+    monkeypatch.setattr(explainer, "generate_structured", fake_generate_structured)
+
+    result = assess_confidence(_EMPTY_EVIDENCE)
+
+    assert result == ConfidenceAssessment(
+        confidence="high", reason="Every cause is declared, high-confidence, and the residual is zero."
+    )
+
+
+def test_assess_confidence_strips_markdown_json_fence(monkeypatch):
+    """Real models sometimes wrap JSON in ```json ... ``` despite explicit
+    instructions not to -- matching score_scenario_llm_graded's own
+    already-proven need for this same guard."""
+
+    def fake_generate_structured(prompt, response_schema=None):
+        return '```json\n{"confidence": "low", "reason": "Multiple ambiguous signals with no clear resolution."}\n```'
+
+    monkeypatch.setattr(explainer, "generate_structured", fake_generate_structured)
+
+    result = assess_confidence(_EMPTY_EVIDENCE)
+
+    assert result.confidence == "low"
+
+
+def test_assess_confidence_threads_data_quality_checked_through_to_the_prompt(monkeypatch):
+    captured = {}
+
+    def fake_generate_structured(prompt, response_schema=None):
+        captured["prompt"] = prompt
+        return '{"confidence": "medium", "reason": "Some uncertainty remains."}'
+
+    monkeypatch.setattr(explainer, "generate_structured", fake_generate_structured)
+
+    assess_confidence(_EMPTY_EVIDENCE, data_quality_checked=False)
 
     assert "Not checked" in captured["prompt"]
