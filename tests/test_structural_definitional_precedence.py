@@ -70,10 +70,26 @@ def test_case_2_distinct_suppressed_aggregation_and_excluded_statuses_survive():
 
 def test_does_not_over_fire_on_unrelated_distinct_and_aggregation_findings():
     """A distinct-category finding and an aggregation-category finding can
-    co-occur without tracing to the same fact: A is COUNT(DISTINCT
-    customer_id), B is MAX(customer_id) -- a genuinely different aggregation
-    function, not just "the same function without DISTINCT". Suppression
-    must not fire here; both findings are independently real."""
+    co-occur without tracing to the SAME fact decision 10 covers: A is
+    COUNT(DISTINCT customer_id), B is MAX(customer_id) -- a genuinely
+    different aggregation function, not just "the same function without
+    DISTINCT". Decision 10's own suppression (distinct-category structural
+    vs. aggregation-category DEFINITIONAL) must not fire here; 'max' does
+    not satisfy _same_count_distinct_fact's suffix relationship against
+    'count_distinct', so `distinct` survives.
+
+    Build 3, Day 5, Part 2 update: this fixture ALSO exercises decision 26
+    (the aggregation-category STRUCTURAL vs. aggregation-category
+    DEFINITIONAL pairing, a separate rule from decision 10's above) --
+    COUNT vs. MAX is a genuine same-fact aggregation collision by decision
+    26's own definition, so as of that rule's introduction `aggregation`
+    IS correctly suppressed here, unlike `distinct`. This test's own
+    assertions never checked the `aggregation` category before this
+    update (only `distinct` and definitional equality), so decision 26's
+    new behavior didn't fail silently -- it just wasn't covered. Now
+    explicitly asserted, so this fixture proves BOTH: decision 10 does
+    NOT over-fire, and decision 26 correctly DOES fire, on the exact same
+    real SQL pair."""
     source_a = DashboardSource(
         label="dashboard_a",
         sql=(
@@ -97,12 +113,12 @@ def test_does_not_over_fire_on_unrelated_distinct_and_aggregation_findings():
 
     sql_diffs = diff_sql(parse_sql(source_a.sql), parse_sql(source_b.sql))
     def_diffs = diff_definitions(source_a, source_b)
-    assert "distinct" in {d.category for d in sql_diffs}
+    assert {d.category for d in sql_diffs} == {"distinct", "aggregation"}
     assert "aggregation" in {d.field for d in def_diffs}
 
     sql_after, def_after = assemble_structural_and_definitional_evidence(sql_diffs, def_diffs)
 
-    assert "distinct" in {d.category for d in sql_after}
+    assert {d.category for d in sql_after} == {"distinct"}  # aggregation suppressed by decision 26
     assert def_after == def_diffs
 
 
@@ -420,3 +436,124 @@ def test_case_19_date_field_suppressed_at_high_confidence():
 
     assert sql_after == []
     assert [d.field for d in def_after] == ["date_field", "excluded_statuses"]
+
+
+# --- Build 3, Day 5, Part 2: decision 26's own resolution -- sql_diff's ---
+# --- aggregation-category finding vs. definition_diff's aggregation-field ---
+# --- finding, both tracing to the same underlying function-pair fact. ---
+# --- None of the 21 committed Scenario objects (SCENARIOS plus the ---
+# --- proof-only exclusions) has an aggregation-category ---
+# --- SQLStructuralDifference at all (confirmed by direct sweep before ---
+# --- writing these tests) -- decision 26's own original collision was ---
+# --- found by a standalone probe (Build 3, Day 3, Part 4), never a ---
+# --- committed fixture, so every test below builds its own DashboardSource ---
+# --- pair directly, matching this module's own existing precedent for an ---
+# --- inline (non-Scenario) construction. ---
+
+
+def test_real_aggregation_function_collision_is_suppressed():
+    """The real collision decision 26 names directly: a plain SUM-vs-COUNT
+    aggregation-function difference, both sides declared. sql_diff fires
+    `aggregation` (SUM(amount) vs COUNT(amount)); definition_diff fires
+    `aggregation` ('sum' vs 'count') for the same fact. Per decision 26's
+    locked direction, the structural finding is suppressed and the
+    definitional finding survives -- flat, unconditional on confidence,
+    matching decisions 10/12's own default direction rather than decision
+    22's confidence-dependent reversal."""
+    source_a = DashboardSource(
+        label="dashboard_a",
+        sql="SELECT SUM(amount) AS x FROM orders WHERE status != 'cancelled' AND order_date >= '2024-01-01'",
+        declared_definition=DeclaredDefinition(
+            date_field="order_date", excluded_statuses=["cancelled"], aggregation="sum"
+        ),
+    )
+    source_b = DashboardSource(
+        label="dashboard_b",
+        sql="SELECT COUNT(amount) AS x FROM orders WHERE status != 'cancelled' AND order_date >= '2024-01-01'",
+        declared_definition=DeclaredDefinition(
+            date_field="order_date", excluded_statuses=["cancelled"], aggregation="count"
+        ),
+    )
+
+    sql_diffs = diff_sql(parse_sql(source_a.sql), parse_sql(source_b.sql))
+    def_diffs = diff_definitions(source_a, source_b)
+    assert [d.category for d in sql_diffs] == ["aggregation"]
+    assert [(d.field, d.source_a_value, d.source_b_value) for d in def_diffs] == [("aggregation", "sum", "count")]
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(sql_diffs, def_diffs)
+
+    assert sql_after == []
+    assert def_after == def_diffs
+
+
+def test_aggregation_suppression_does_not_over_fire_on_unrelated_declared_values():
+    """Over-fire case 1 (required, same standard as every prior suppression
+    rule): sql_diff flags a real SUM-vs-COUNT function pair, but the
+    definitional finding describes a genuinely DIFFERENT, unrelated pair
+    ('avg' vs 'min' -- a declared value need not match the real SQL at
+    all, which is exactly what a self-consistency check would separately
+    catch). _same_aggregation_function_fact must refuse to match a
+    structural fact against a definitional finding that doesn't actually
+    describe it -- suppression must not fire, and both findings survive
+    independently."""
+    source_a = DashboardSource(
+        label="dashboard_a",
+        sql="SELECT SUM(amount) AS x FROM orders WHERE status != 'cancelled' AND order_date >= '2024-01-01'",
+        declared_definition=DeclaredDefinition(
+            date_field="order_date", excluded_statuses=["cancelled"], aggregation="avg"
+        ),
+    )
+    source_b = DashboardSource(
+        label="dashboard_b",
+        sql="SELECT COUNT(amount) AS x FROM orders WHERE status != 'cancelled' AND order_date >= '2024-01-01'",
+        declared_definition=DeclaredDefinition(
+            date_field="order_date", excluded_statuses=["cancelled"], aggregation="min"
+        ),
+    )
+
+    sql_diffs = diff_sql(parse_sql(source_a.sql), parse_sql(source_b.sql))
+    def_diffs = diff_definitions(source_a, source_b)
+    assert [d.category for d in sql_diffs] == ["aggregation"]
+    assert [(d.field, d.source_a_value, d.source_b_value) for d in def_diffs] == [("aggregation", "avg", "min")]
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(sql_diffs, def_diffs)
+
+    assert sql_after == sql_diffs
+    assert def_after == def_diffs
+
+
+def test_aggregation_fallback_surfaces_sql_finding_when_no_declaration_covers_it():
+    """Over-fire case 2 / the fallback branch (required, stated explicitly
+    in the implementation, not an accidental fallthrough): neither side
+    declares a definition, and inference on the more-than-one-aggregate
+    side produces a low-confidence "(ambiguous)" value that never matches
+    any real function name. sql_diff's genuine `aggregation` finding
+    (SUM+COUNT on one side vs. a single COUNT on the other -- a differing
+    NUMBER of aggregate calls, not a same-position function swap) must
+    survive completely unsuppressed -- this must not collapse to "no
+    finding at all"."""
+    source_a = DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount), COUNT(amount) AS x FROM orders "
+            "WHERE status != 'cancelled' AND order_date >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    )
+    source_b = DashboardSource(
+        label="dashboard_b",
+        sql="SELECT COUNT(amount) AS x FROM orders WHERE status != 'cancelled' AND order_date >= '2024-01-01'",
+        declared_definition=None,
+    )
+
+    sql_diffs = diff_sql(parse_sql(source_a.sql), parse_sql(source_b.sql))
+    def_diffs = diff_definitions(source_a, source_b)
+    assert [d.category for d in sql_diffs] == ["aggregation"]
+    assert [(d.field, d.source_a_value, d.confidence) for d in def_diffs] == [
+        ("aggregation", "(ambiguous)", "low")
+    ]
+
+    sql_after, def_after = assemble_structural_and_definitional_evidence(sql_diffs, def_diffs)
+
+    assert sql_after == sql_diffs
+    assert def_after == def_diffs

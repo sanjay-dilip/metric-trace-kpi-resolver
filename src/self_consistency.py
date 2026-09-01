@@ -353,6 +353,83 @@ def _same_count_distinct_fact(definition_differences: list[DefinitionDifference]
     return False
 
 
+def _strip_distinct_suffix(value: str) -> str:
+    """Same suffix-stripping _same_count_distinct_fact already uses inline
+    (e.g. "count_distinct" -> "count"), factored out so
+    _same_aggregation_function_fact (below) can normalize a
+    DefinitionDifference's aggregation value the same way before comparing
+    it to sql_diff's own bare SQL function name -- src/sql_parser.py's
+    AggregationCall never folds DISTINCT into its function name (it's
+    tracked separately via has_distinct), so "count_distinct" never
+    matches sql_diff's "COUNT" without this normalization first."""
+    return value[: -len(_DISTINCT_SUFFIX)] if value.endswith(_DISTINCT_SUFFIX) else value
+
+
+def _aggregation_function_from_snippet(snippet: str) -> str | None:
+    """Extract the bare aggregate function name (e.g. "SUM", "COUNT") from
+    an `aggregation` SQLStructuralDifference snippet. sql_diff's own
+    query_a_snippet/query_b_snippet for a single differing call is always
+    exactly f"{function}({column})" (src/sql_diff.py's _diff_aggregations,
+    the "same position, different function/column" branch) -- parsed via
+    sqlglot as an expression, matching every other "extract from a
+    snippet" helper in this file, rather than a string split.
+
+    Returns None -- not a best guess -- when the snippet does not parse
+    down to exactly one aggregate function call: covers _diff_aggregations'
+    OTHER branch (a differing NUMBER of aggregate calls), whose snippet is
+    either "(none)" (parses to a bare Paren/Column, not an AggFunc) or a
+    comma-joined list of every call on that side (sqlglot.parse_one raises
+    on the un-parenthesized comma -- confirmed directly, not assumed).
+    Neither shape describes one comparable function, so refusing to guess
+    here is what keeps _same_aggregation_function_fact (below) from ever
+    matching the wrong pair when a scenario has more than one
+    aggregation-bearing column."""
+    try:
+        tree = sqlglot.parse_one(snippet)
+    except Exception:
+        return None
+    if not isinstance(tree, exp.AggFunc):
+        return None
+    return type(tree).__name__.upper()
+
+
+def _same_aggregation_function_fact(
+    sql_difference: SQLStructuralDifference, definition_difference: DefinitionDifference
+) -> bool:
+    """"Same underlying fact" for the aggregation/aggregation pairing
+    (decision 26, docs/decisions.md) -- the same precision standard as
+    every other "same fact" helper in this file: not merely "both findings
+    are categorized/labeled aggregation," but a side-matched exact
+    equality between the two findings' own function names. A plain
+    aggregation-vs-aggregation collision could in principle involve two
+    DIFFERENT function pairs if a scenario ever had more than one
+    aggregation-bearing column (a "differing NUMBER of calls" shape, or
+    multiple differing calls at different SELECT positions) --
+    _aggregation_function_from_snippet refuses to guess in either shape,
+    so this correctly returns False rather than matching the wrong pair,
+    same reasoning as _bare_date_column_from_snippet's own multi-column
+    refusal.
+
+    definition_difference's own values ("sum"/"count"/"count_distinct" --
+    DeclaredDefinition's own vocabulary, or the same values from inference,
+    or "(ambiguous)" for a low-confidence guess) are normalized via
+    _strip_distinct_suffix before comparison, since sql_diff's function
+    name is always the bare SQL function -- DISTINCT is tracked separately
+    at the query level (src/sql_parser.py's AggregationCall docstring),
+    never folded into the function name the way "count_distinct" folds it
+    into a single definitional value. "(ambiguous)" never strips to a real
+    function name and so never matches, correctly."""
+    if definition_difference.field != "aggregation":
+        return False
+    structural_a = _aggregation_function_from_snippet(sql_difference.query_a_snippet)
+    structural_b = _aggregation_function_from_snippet(sql_difference.query_b_snippet)
+    if structural_a is None or structural_b is None:
+        return False
+    definitional_a = _strip_distinct_suffix(definition_difference.source_a_value).upper()
+    definitional_b = _strip_distinct_suffix(definition_difference.source_b_value).upper()
+    return structural_a == definitional_a and structural_b == definitional_b
+
+
 def _bare_date_column_from_snippet(snippet: str) -> str | None:
     """Extract the single bare column name referenced in a date_field
     SQLStructuralDifference snippet (e.g. "order_date >= '2024-01-01'"),
@@ -535,10 +612,42 @@ def assemble_structural_and_definitional_evidence(
     `filter` yet either -- there is currently no dollar computation on
     either side of this specific collision to double-count or lose.
 
-    When none of the three conditions hold -- any finding of a pair absent,
+      - `aggregation`-category SQLStructuralDifference + `aggregation`-field
+        DefinitionDifference tracing to the same function-pair fact
+        (decision 26, per _same_aggregation_function_fact) -- a FOURTH
+        rule, same function, not a new parallel one. Direction is FLAT,
+        matching decisions 10/12's original default (business-declared
+        beats mechanical), not decision 22's confidence-dependent
+        reversal: the SQLStructuralDifference is always removed when the
+        same fact is confirmed, the DefinitionDifference always survives,
+        regardless of confidence. Locked design choice, stated explicitly
+        because it is NOT symmetric with decision 22's own reasoning:
+        unlike the filter/excluded_statuses pairing (decision 18/22, where
+        a low-confidence definitional GUESS carries less certainty than
+        the mechanical fact it collides with, justifying a confidence-
+        dependent reversal), neither aggregation finding here carries
+        strictly more information than the other -- the definitional
+        finding wins purely for consistency with decisions 10/12's own
+        default direction, not because it is more informative in this
+        case.
+
+    EXPLICIT fallback branch, stated as its own condition rather than left
+    as an unstated absence-of-a-match: when the DefinitionDifference for a
+    pairing above is unavailable (neither side declares/infers a
+    comparable value) OR its own "same fact" check does not confirm a
+    match (e.g. a low-confidence/ambiguous inferred value, or a genuinely
+    different underlying fact), the corresponding SQLStructuralDifference
+    is left exactly as sql_diff produced it -- unsuppressed, still present
+    in the returned list, never silently dropped. This is not a special
+    case requiring separate code: each rule above only ever REMOVES a
+    finding when its own "same fact" check returns True; the absence of
+    that removal IS the fallback, by construction, for every one of the
+    four rules.
+
+    When none of the four conditions hold -- any finding of a pair absent,
     or a structural finding present without a same-fact counterpart on the
     other side -- all lists pass through unchanged for that pairing. No new
-    inference or comparison logic beyond the three "same fact" helpers:
+    inference or comparison logic beyond the four "same fact" helpers:
     this is orchestration/filtering only, over already-computed sql_diff
     and definition_diff output, same as assemble_definitional_evidence.
     """
@@ -568,5 +677,20 @@ def assemble_structural_and_definitional_evidence(
             definition_differences = [diff for diff in definition_differences if diff.field != "excluded_statuses"]
         else:
             sql_differences = [diff for diff in sql_differences if diff.category != "filter"]
+
+    aggregation_structural = next((diff for diff in sql_differences if diff.category == "aggregation"), None)
+    aggregation_definitional = next(
+        (diff for diff in definition_differences if diff.field == "aggregation"), None
+    )
+    if (
+        aggregation_structural is not None
+        and aggregation_definitional is not None
+        and _same_aggregation_function_fact(aggregation_structural, aggregation_definitional)
+    ):
+        sql_differences = [diff for diff in sql_differences if diff.category != "aggregation"]
+    # Explicit fallback (see docstring): if aggregation_definitional is None,
+    # or the same-fact check above returns False, sql_differences is left
+    # untouched here -- aggregation_structural (if present) survives
+    # unsuppressed, not silently dropped.
 
     return sql_differences, definition_differences
