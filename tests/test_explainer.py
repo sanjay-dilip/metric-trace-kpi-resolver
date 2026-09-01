@@ -127,6 +127,74 @@ def test_prompt_includes_every_data_quality_issue():
     assert "-150.00" in prompt
 
 
+def test_prompt_defaults_to_checked_and_clean_when_data_quality_checked_omitted():
+    """Build 3, Day 5, Part 4: data_quality_checked defaults to True --
+    the backward-compatible default for every existing caller/test that
+    has no real dispatch status to thread through. _EMPTY_EVIDENCE has no
+    data_quality_issues, so omitting the new parameter must render the
+    original 'checked and found no issues' framing, not the new 'never
+    checked' one."""
+    prompt = _format_evidence_prompt(_EMPTY_EVIDENCE)
+    assert "None. A data-quality/freshness check was run for this investigation and found no issues." in prompt
+    assert "Not checked" not in prompt
+
+
+def test_prompt_states_never_checked_when_data_quality_checked_is_false():
+    """Build 3, Day 5, Part 4 (decision 36's finding #3, Case 3's own
+    quoted defect): the actual fix. When data_quality_checked=False and
+    data_quality_issues is empty, the prompt must state plainly that no
+    check was ever run -- not the same 'found no issues' framing a
+    genuinely checked-and-clean scenario gets."""
+    prompt = _format_evidence_prompt(_EMPTY_EVIDENCE, data_quality_checked=False)
+    assert (
+        "Not checked. No data-quality/freshness check has been run for this investigation "
+        "-- this is NOT confirmation that the data is fresh, complete, or clean, only that "
+        "no such check exists for it yet." in prompt
+    )
+    assert "A data-quality/freshness check was run for this investigation and found no issues." not in prompt
+
+
+def test_prompt_instructs_against_claiming_freshness_when_never_checked():
+    prompt = _format_evidence_prompt(_EMPTY_EVIDENCE, data_quality_checked=False)
+    assert (
+        "Do NOT state or imply that the data is fresh, complete, clean, or free of "
+        "data-quality issues" in prompt
+    )
+
+
+def test_prompt_omits_never_checked_instruction_when_data_quality_checked_true():
+    prompt = _format_evidence_prompt(_EMPTY_EVIDENCE, data_quality_checked=True)
+    assert "Do NOT state or imply that the data is fresh" not in prompt
+
+
+def test_prompt_never_checked_framing_does_not_apply_when_issues_are_actually_present():
+    """data_quality_checked=False is meaningless once real issues exist --
+    a non-empty data_quality_issues list already proves a check ran,
+    regardless of what data_quality_checked says. The real dispatch
+    status and a real issue list can never actually disagree in
+    practice (is_data_quality_dispatched and _resolve_data_quality_issues
+    are driven by the same table), but the rendering logic itself must
+    not silently trust a wrong data_quality_checked=False over the real,
+    populated list it was actually given."""
+    evidence = _EMPTY_EVIDENCE.model_copy(
+        update={
+            "data_quality_issues": [
+                DataQualityIssue(
+                    category="stale_extract",
+                    source="a",
+                    description="source_a's extract is missing 1 row",
+                    confidence="high",
+                    dollar_impact=-150.0,
+                )
+            ],
+        }
+    )
+    prompt = _format_evidence_prompt(evidence, data_quality_checked=False)
+    assert "category=stale_extract" in prompt
+    assert "Not checked" not in prompt
+    assert "Do NOT state or imply that the data is fresh" not in prompt
+
+
 def test_prompt_instructs_not_to_sum_data_quality_and_reconciliation_when_both_present():
     """Case 20's shape: reconciliation and data_quality_issues both non-empty --
     decision 17's own named risk (docs/decisions.md), now reachable in the prompt."""
@@ -284,3 +352,20 @@ def test_explain_investigation_calls_generate_structured_with_no_schema_and_retu
     assert result == "mock prose explanation"
     assert captured["response_schema"] is None
     assert "no discrepancy was found" in captured["prompt"]
+
+
+def test_explain_investigation_threads_data_quality_checked_through_to_the_prompt(monkeypatch):
+    """Build 3, Day 5, Part 4: explain_investigation's own new parameter
+    must actually reach _format_evidence_prompt, not just exist on the
+    outer function's signature."""
+    captured = {}
+
+    def fake_generate_structured(prompt, response_schema=None):
+        captured["prompt"] = prompt
+        return "mock prose explanation"
+
+    monkeypatch.setattr(explainer, "generate_structured", fake_generate_structured)
+
+    explain_investigation(_EMPTY_EVIDENCE, data_quality_checked=False)
+
+    assert "Not checked" in captured["prompt"]

@@ -41,7 +41,26 @@ of a normal explanation, per decision 6's escalation requirement. This is
 explicitly a probe of whether evidence-only recognition is viable at all --
 live verification results are reported in this task's own PR, not silently
 assumed to work; see docs/decisions.md for the eventual verdict once
-written."""
+written.
+
+Build 3, Day 5, Part 4: closes decision 36's finding #3 (Build 3, Day 5,
+Part 3's transcript re-audit). `evidence.data_quality_issues == []` is
+ambiguous between two genuinely different states -- "a check was run and
+found nothing" versus "no check has ever been dispatched for this
+scenario at all" (src/reconciliation_assembly.py's own dispatch-table
+limitation, a long-standing named Open Item). The live model response
+for Case 3 collapsed that ambiguity into an unsupported affirmative
+claim: "The data-quality issues were also found to be zero, indicating
+that the data is fresh and complete" -- treating silence as confirmation.
+`_format_evidence_prompt` and `explain_investigation` now take an
+explicit `data_quality_checked` parameter (threaded from the real
+dispatch status at the actual call site, `src.reconciliation_assembly
+.is_data_quality_dispatched`, the same "thread a new parameter through
+from where the real information lives" pattern decision 24 used for
+`other_side_sql`) so the prompt can state the correct one of three
+things: real issues found, checked-and-clean, or never checked at all --
+with a matching instruction telling the model explicitly that "never
+checked" is not evidence of cleanliness."""
 
 from src.llm_client import generate_structured
 from src.schema import InvestigationEvidence
@@ -63,10 +82,22 @@ the same way Build 3's future unsupported-claim-rate checker will need an
 exact string to test for, not a fuzzy substring guess."""
 
 
-def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
+def _format_evidence_prompt(evidence: InvestigationEvidence, data_quality_checked: bool = True) -> str:
     """Every field of `evidence` is rendered into the prompt verbatim --
     nothing added, nothing summarized away before the LLM sees it (per the
-    Day 8 task's own requirement)."""
+    Day 8 task's own requirement).
+
+    data_quality_checked (Build 3, Day 5, Part 4): the real dispatch
+    status for this scenario -- True when a data-quality/freshness check
+    was actually run (found an issue or not; `evidence.data_quality_issues`
+    itself already distinguishes those two), False when no check was ever
+    dispatched at all (src.reconciliation_assembly.is_data_quality_dispatched).
+    Only matters when evidence.data_quality_issues is empty, since a
+    non-empty list already proves a check ran. Defaults to True -- the
+    correct, backward-compatible default for every existing caller/test
+    that doesn't construct a real Scenario and has no dispatch status to
+    thread through -- so the new "never checked" framing below is opt-in,
+    not silently assumed."""
     lines: list[str] = []
 
     lines.append("## Reconciled causes (each is a confirmed cause with its dollar contribution to the gap)")
@@ -118,8 +149,14 @@ def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
                 f"- category={q.category} | source={q.source} | {q.description} "
                 f"| confidence={q.confidence} | dollar_impact={q.dollar_impact:+.2f}"
             )
+    elif data_quality_checked:
+        lines.append("- None. A data-quality/freshness check was run for this investigation and found no issues.")
     else:
-        lines.append("- None.")
+        lines.append(
+            "- Not checked. No data-quality/freshness check has been run for this investigation "
+            "-- this is NOT confirmation that the data is fresh, complete, or clean, only that "
+            "no such check exists for it yet."
+        )
 
     lines.append("")
     if evidence.unexplained_residual is None:
@@ -179,6 +216,16 @@ def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
             "is entirely unexplained when a data-quality issue accounts for it."
         )
 
+    if not evidence.data_quality_issues and not data_quality_checked:
+        instructions.append(
+            "- No data-quality/freshness check has been run for this investigation (see the "
+            "Data-quality issues section above, marked \"Not checked\"). Do NOT state or imply "
+            "that the data is fresh, complete, clean, or free of data-quality issues -- that "
+            "would be a claim this investigation never actually checked, not a fact it "
+            "confirmed. Simply omit any claim about data quality, or state plainly that no "
+            "such check was performed for this investigation."
+        )
+
     if evidence.data_quality_issues:
         instructions.append(
             "- The unexplained residual figure above does NOT include or account for the "
@@ -224,11 +271,15 @@ def _format_evidence_prompt(evidence: InvestigationEvidence) -> str:
     )
 
 
-def explain_investigation(evidence: InvestigationEvidence) -> str:
+def explain_investigation(evidence: InvestigationEvidence, data_quality_checked: bool = True) -> str:
     """Construct a prompt from `evidence`'s actual field values and return
     Gemini's prose explanation via generate_structured (plain text --
-    response_schema left as None, this task's designated use)."""
-    prompt = _format_evidence_prompt(evidence)
+    response_schema left as None, this task's designated use).
+
+    data_quality_checked: see _format_evidence_prompt's own docstring --
+    threaded straight through, unmodified, to the one function that
+    actually uses it."""
+    prompt = _format_evidence_prompt(evidence, data_quality_checked)
     result = generate_structured(prompt)
     assert isinstance(result, str)
     return result
