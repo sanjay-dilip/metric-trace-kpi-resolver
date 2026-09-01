@@ -108,7 +108,21 @@ def _format_evidence_block(evidence: InvestigationEvidence, data_quality_checked
     correct, backward-compatible default for every existing caller/test
     that doesn't construct a real Scenario and has no dispatch status to
     thread through -- so the "never checked" framing below is opt-in,
-    not silently assumed."""
+    not silently assumed.
+
+    Build 4, Day 1, Part 2: the Data-quality issues section header used to
+    end with "-- see the instructions below for how these relate," written
+    back when this text only ever appeared inside `_format_evidence_prompt`,
+    where a real "Instructions:" section genuinely follows and explains
+    the relationship (the sum/conflation guard, the residual-doesn't-
+    account-for-data-quality instruction). Once this block became a shared
+    consumer for `assess_confidence` too -- whose own instructions never
+    discuss that relationship at all -- the phrase was orphaned there: a
+    forward-reference to content that, for that consumer, doesn't exist.
+    Removed rather than reworded, since the underlying fact (data-quality
+    issues are computed independently of reconciled causes) stands on its
+    own without the pointer -- true and complete in both consumers'
+    prompts, not just the explainer's."""
     lines: list[str] = []
 
     lines.append("## Reconciled causes (each is a confirmed cause with its dollar contribution to the gap)")
@@ -152,7 +166,7 @@ def _format_evidence_block(evidence: InvestigationEvidence, data_quality_checked
     lines.append("")
     lines.append(
         "## Data-quality issues (freshness/completeness defects, computed independently of the "
-        "reconciled causes above -- see the instructions below for how these relate)"
+        "reconciled causes above)"
     )
     if evidence.data_quality_issues:
         for q in evidence.data_quality_issues:
