@@ -130,9 +130,34 @@ _RESIDUAL_VIOLATING_PHRASES = [
     "further investigation is needed",
     "further investigation may be necessary",
     "not yet accounted for",
+    "not accounted for",
+    "gap remains unexplained",
 ]
 """Decision 30's own quoted contradicting phrases (Cases 10, 11, 20's live
-verification transcript), used verbatim, not re-derived."""
+verification transcript), used verbatim, not re-derived.
+
+Build 3, Day 5, Part 1 (decision 33's own named follow-up): the original
+six phrases above are a fixed list, and a fixed list cannot catch every
+paraphrase -- PR #136's fresh 6-scenario comparison run (Build 3, Day 4,
+Part 8, Task 3) found the LLM grader correctly flagged a Case 20 response
+this list missed entirely: "there may be other underlying causes that are
+not accounted for in this investigation" (no "yet" -- doesn't match "not
+yet accounted for") and "the entire gap remains unexplained" (not on the
+list at all). Two new phrases added, each grounded directly in a real,
+already-quoted transcript, not invented: "not accounted for" (Case 20's
+own fresh quote above) and "gap remains unexplained" (also present
+verbatim in Case 11's original decision-30 quote -- "the entire gap
+remains unexplained" -- which was already correctly flagged via a
+different phrase, so this addition doesn't change its verdict, only adds
+a second, independent match). Deliberately NOT a bare "remains
+unexplained": Case 9's own original decision-30 transcript says "there is
+still a gap that remains unexplained" -- worded about the RESIDUAL itself
+remaining unexplained (correct, expected framing) rather than claiming
+other CAUSES remain unaccounted for -- and Case 9 is a documented true
+negative (decision 30: "the model does not claim other causes exist").
+"gap remains unexplained" requires exact adjacency, so it does not match
+Case 9's "gap that remains unexplained" (a "that" sits between the two
+words), keeping Case 9 negative as it must remain."""
 
 _HEDGE_THEN_RETRACT_RE = re.compile(
     r"(identified|another)[\s\S]{0,150}?cause[\s\S]{0,200}?(does not exist|doesn't exist)", re.IGNORECASE
