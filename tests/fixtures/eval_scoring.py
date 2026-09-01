@@ -88,6 +88,7 @@ from pydantic import BaseModel
 
 from src.explainer import explain_investigation
 from src.llm_client import generate_structured
+from src.reconciliation_assembly import is_data_quality_dispatched
 from src.schema import DataQualityIssue, DefinitionDifference, InvestigationEvidence, ReconciliationLineItem
 from tests.fixtures.benchmark_entries import BENCHMARK_ENTRIES, BenchmarkEntry
 from tests.fixtures.benchmark_pipeline import PartialInvestigationEvidence, assemble_investigation_evidence_for_benchmark
@@ -132,6 +133,7 @@ _RESIDUAL_VIOLATING_PHRASES = [
     "not yet accounted for",
     "not accounted for",
     "gap remains unexplained",
+    "additional factors",
 ]
 """Decision 30's own quoted contradicting phrases (Cases 10, 11, 20's live
 verification transcript), used verbatim, not re-derived.
@@ -157,7 +159,18 @@ other CAUSES remain unaccounted for -- and Case 9 is a documented true
 negative (decision 30: "the model does not claim other causes exist").
 "gap remains unexplained" requires exact adjacency, so it does not match
 Case 9's "gap that remains unexplained" (a "that" sits between the two
-words), keeping Case 9 negative as it must remain."""
+words), keeping Case 9 negative as it must remain.
+
+Build 3, Day 5, Part 4 (decision 36's finding #2): "additional factors"
+added, grounded in PR #128's real fresh Case 2 transcript -- "it's
+possible that there may be additional factors at play that were not
+captured by this analysis" -- said about a scenario with
+data_quality_issues=[] and unexplained_residual=0.0, a shape the
+_detect_residual_self_contradiction check was never even RUN against
+before this addition (see score_scenario's own widened gate, below,
+which is the actual fix -- this phrase alone would do nothing without
+it). Negation-guarded like every other phrase here, so a genuine "no
+additional factors" statement is unaffected."""
 
 _HEDGE_THEN_RETRACT_RE = re.compile(
     r"(identified|another)[\s\S]{0,150}?cause[\s\S]{0,200}?(does not exist|doesn't exist)", re.IGNORECASE
@@ -201,7 +214,13 @@ class ScenarioScore(BaseModel):
     scenario_id: str
     root_cause_correct: bool | Literal["not_gradable"]
     unsupported_claim_patterns: list[
-        Literal["sign_dropping", "hedge_then_retract", "residual_self_contradiction", "fact_doubling"]
+        Literal[
+            "sign_dropping",
+            "hedge_then_retract",
+            "residual_self_contradiction",
+            "fact_doubling",
+            "data_quality_overclaim",
+        ]
     ]
     checks_run: list[str]
     escalation_status: Literal["not_gradable"] = "not_gradable"
@@ -401,7 +420,7 @@ verification (Build 3, Day 4, Part 6, Task 3) found a real false positive:
 investigation is needed' as a literal substring, but the leading 'no'
 reverses its meaning entirely into a CORRECT statement, not a contradiction."""
 
-_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?]")
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?]|,\s+(?:and|but|or|yet|so)\b", re.IGNORECASE)
 """Build 3, Day 4, Part 8, Task 1 fix: a real Case 10 false positive
 (decision 32) traced to a fixed 20-character negation-lookback window --
 that scenario's actual sentence, 'this is not evidence that additional
@@ -412,7 +431,28 @@ Rather than guess a wider fixed number (a speculative rewrite the next
 long sentence could just as easily defeat), the negation search now scans
 back to the start of the CONTAINING SENTENCE instead -- correctly reaches
 the real 'not' in Case 10's exact sentence without reaching into an
-unrelated prior sentence, which a much larger fixed window risked doing."""
+unrelated prior sentence, which a much larger fixed window risked doing.
+
+Build 3, Day 5, Part 4 (decision 36's finding #2 -- widening
+residual_self_contradiction's gate uncovered a real false negative in
+THIS boundary definition, not just the gate itself): a bare period-only
+sentence boundary is too coarse for a compound sentence joining two
+independent clauses with a coordinating conjunction. PR #128's real Case
+2 quote -- "...the investigation did not identify any other causes
+beyond those mentioned, and it's possible that there may be additional
+factors at play..." -- is ONE sentence (no period until the very end),
+so the old period-only boundary put "did not identify" (an unrelated
+negation on the FIRST clause) inside the same search window as
+"additional factors" (in the SECOND clause, joined only by ", and"),
+producing a false negation-guard match on a real violation. A comma
+immediately followed by a coordinating conjunction ("and"/"but"/"or"/
+"yet"/"so") is now ALSO a boundary -- this correctly separates Case 2's
+two independent clauses, while leaving Case 10's own fix untouched:
+Case 10's sentence has exactly one such marker (", but"), which sits
+BEFORE its own "not", so the window from that boundary to the violating
+phrase still includes the real "not" and the negation-guard still fires
+correctly there (verified directly, not assumed -- see the regression
+test for Case 10's compound negation, still passing after this change)."""
 
 
 def _violating_phrase_present(prose: str, phrase: str) -> bool:
@@ -463,6 +503,46 @@ def _detect_fact_doubling(prose: str, known_gap: float) -> bool:
     return False
 
 
+_DATA_QUALITY_OVERCLAIM_PHRASES = [
+    "fresh and complete",
+    "confirmed clean",
+]
+"""Build 3, Day 5, Part 4 (decision 36's finding #3, Case 3's own quoted
+defect): confident language claiming data quality was checked and found
+clean, matched against Case 3's own real transcript verbatim -- 'The
+data-quality issues were also found to be zero, indicating that the data
+is fresh and complete.' Deliberately gated (see score_scenario, below) to
+only ever run when the scenario's real dispatch status
+(src.reconciliation_assembly.is_data_quality_dispatched) is False -- this
+same language is entirely correct and expected on a scenario that WAS
+genuinely checked and found clean (Case 8's own clean pass, decision 30),
+so the phrase list alone is not the safety condition here; the gate is.
+
+Deliberately NOT a bare 'data is fresh' or 'confirmed fresh': a real
+false positive was found (and fixed) constructing this project's own
+honest, correct undispatched response ('...it's unclear whether the
+data is fresh, complete, or clean...', Task 1's own live-verified
+fix text) -- 'data is fresh' is a literal substring of that entirely
+correct, uncertainty-expressing sentence. Both short phrases were
+dropped rather than negation-guarded, keeping only the two complete,
+specifically-affirmative constructions that don't collide with the
+fix's own honest phrasing."""
+
+
+def _detect_data_quality_overclaim(prose: str) -> bool:
+    """Confident "checked and clean" language about data quality, for a
+    scenario score_scenario has already confirmed was never dispatched to
+    any check at all -- see _DATA_QUALITY_OVERCLAIM_PHRASES for the real
+    quote this is matched against and why gating (not phrase wording
+    alone) is what keeps this safe. No negation guard needed the way
+    _violating_phrase_present has one: every phrase here is itself an
+    affirmative claim ('data is fresh'), not one that a preceding "not"
+    could flip into the correct statement this check exists to require
+    ('data quality was NOT checked')."""
+    lowered = prose.lower()
+    return any(phrase in lowered for phrase in _DATA_QUALITY_OVERCLAIM_PHRASES)
+
+
 def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
     """Score one already-generated explainer response against `entry`'s
     ground truth. Deliberately does NOT call the LLM -- `prose` must
@@ -474,7 +554,13 @@ def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
     root_cause_correct = _score_root_cause(entry, prose, evidence)
 
     unsupported_claim_patterns: list[
-        Literal["sign_dropping", "hedge_then_retract", "residual_self_contradiction", "fact_doubling"]
+        Literal[
+            "sign_dropping",
+            "hedge_then_retract",
+            "residual_self_contradiction",
+            "fact_doubling",
+            "data_quality_overclaim",
+        ]
     ] = []
 
     checks_run.append("fact_doubling")
@@ -502,10 +588,28 @@ def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
         if _detect_hedge_then_retract(prose):
             unsupported_claim_patterns.append("hedge_then_retract")
 
-    if evidence.data_quality_issues:
+    # Build 3, Day 5, Part 4 (decision 36's finding #2): gate widened beyond
+    # data_quality_issues non-empty. A residual that is exactly 0.0 means the
+    # causes found ALREADY fully explain the gap, algebraically -- hedging
+    # language implying other/uncaptured causes might still exist is exactly
+    # as unsupported there as it is in the data-quality-adjacent case this
+    # check originally covered, regardless of whether any data-quality
+    # finding is even in play. `is not None` guards PartialInvestigationEvidence's
+    # unexplained_residual=None (never computed, not "clean") from matching.
+    residual_is_clean = evidence.unexplained_residual is not None and evidence.unexplained_residual == 0.0
+    if evidence.data_quality_issues or residual_is_clean:
         checks_run.append("residual_self_contradiction")
         if _detect_residual_self_contradiction(prose):
             unsupported_claim_patterns.append("residual_self_contradiction")
+
+    # Build 3, Day 5, Part 4 (decision 36's finding #3): only ever runs when
+    # data_quality_issues is empty AND the scenario was never dispatched to
+    # any check at all -- a genuinely checked-and-clean scenario (Case 8)
+    # legitimately says "no issues found," which must never be flagged here.
+    if not evidence.data_quality_issues and not is_data_quality_dispatched(entry.scenario.scenario_id):
+        checks_run.append("data_quality_overclaim")
+        if _detect_data_quality_overclaim(prose):
+            unsupported_claim_patterns.append("data_quality_overclaim")
 
     return ScenarioScore(
         scenario_id=entry.scenario.scenario_id,
@@ -526,7 +630,8 @@ def run_benchmark() -> list[ScenarioScore]:
     scores = []
     for entry in BENCHMARK_ENTRIES:
         evidence = assemble_investigation_evidence_for_benchmark(entry)
-        prose = explain_investigation(evidence)
+        dispatched = is_data_quality_dispatched(entry.scenario.scenario_id)
+        prose = explain_investigation(evidence, data_quality_checked=dispatched)
         scores.append(score_scenario(entry, prose))
     return scores
 

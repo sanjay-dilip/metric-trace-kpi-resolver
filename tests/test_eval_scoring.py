@@ -225,18 +225,30 @@ def test_escalation_status_always_not_gradable():
 
 
 def test_checks_run_omits_patterns_with_no_applicable_evidence():
-    """Case 1 has no negative dollar figure and no data_quality_issues, so
-    sign_dropping and residual_self_contradiction are never attempted --
-    but it DOES have a real empty-vs-populated category split (sql_differences
-    and reconciliation are non-empty; definition_differences,
+    """Case 1 has no negative dollar figure, so sign_dropping is never
+    attempted. It DOES have a real empty-vs-populated category split
+    (sql_differences and reconciliation are non-empty; definition_differences,
     self_consistency_issues, and data_quality_issues are all empty), so
     hedge_then_retract legitimately does run. fact_doubling always runs
-    (Build 3, Day 4, Part 8), the same way root_cause always does."""
+    (Build 3, Day 4, Part 8), the same way root_cause always does.
+
+    Build 3, Day 5, Part 4: residual_self_contradiction and
+    data_quality_overclaim BOTH now legitimately run here too --
+    Case 1's own unexplained_residual is exactly 0.0 (decision 36's
+    finding #2's widened gate) and Case 1 is genuinely undispatched
+    (decision 36's finding #3's new check) -- this is the correct,
+    intended behavior of both widenings, not a regression to work around.
+    """
     entry = _ENTRY_BY_ID["case_01_join_type"]
     score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.")
-    assert score.checks_run == ["root_cause", "fact_doubling", "hedge_then_retract"]
+    assert score.checks_run == [
+        "root_cause",
+        "fact_doubling",
+        "hedge_then_retract",
+        "residual_self_contradiction",
+        "data_quality_overclaim",
+    ]
     assert "sign_dropping" not in score.checks_run
-    assert "residual_self_contradiction" not in score.checks_run
 
 
 # --- Regression tests for four real bugs Task 3's live verification found ---
@@ -490,6 +502,140 @@ def test_case_11_still_flagged_after_paraphrase_fix():
     )
     score = score_scenario(entry, prose)
     assert "residual_self_contradiction" in score.unsupported_claim_patterns
+
+
+# --- Build 3, Day 5, Part 4: decision 36's findings #2 and #3, both real, ---
+# --- already-quoted transcripts (PR #128's Case 2, PR #136's Case 3), not ---
+# --- synthetic strings. ---
+
+
+def test_detects_data_quality_overclaim_on_case_3_real_transcript():
+    """The actual finding #3 target (decision 36, PR #136's fresh Case 3
+    transcript): Case 3 has no _DATA_QUALITY_DISPATCH entry at all (never
+    checked), yet the response claims confirmed freshness. Must now be
+    caught by the new data_quality_overclaim pattern."""
+    entry = _ENTRY_BY_ID["case_03_hybrid_fallback"]
+    prose = (
+        "The investigation found two reconciled causes that contribute to the discrepancy "
+        "between the two sources. The first cause is related to the date field, where "
+        "source A implies 'order_date' and source B implies 'created_at'. This discrepancy "
+        "has a dollar impact of -$400.00. The second cause is related to the excluded "
+        "statuses, where source A implies 'cancelled' and source B implies 'cancelled, "
+        "refunded'. This discrepancy has a dollar impact of $500.00.\n\n"
+        "Additionally, the investigation found definitional differences between the two "
+        "sources. The date field and excluded statuses have different values in source A "
+        "and source B, which could be due to a mismatch in the metric definitions. These "
+        "differences were identified as 'medium' confidence, indicating that they are "
+        "plausible but not certain.\n\n"
+        "The investigation did not find any self-consistency issues or SQL structural "
+        "differences between the two sources. The data-quality issues were also found to "
+        "be zero, indicating that the data is fresh and complete.\n\n"
+        "The unexplained residual is $0.00, indicating that the gap is fully explained by "
+        "the causes found. Therefore, the investigation concludes that the discrepancy "
+        "between the two sources is fully explained by the reconciled causes and "
+        "definitional differences identified."
+    )
+    score = score_scenario(entry, prose)
+    assert "data_quality_overclaim" in score.unsupported_claim_patterns
+    assert "data_quality_overclaim" in score.checks_run
+
+
+def test_does_not_flag_data_quality_overclaim_when_scenario_was_genuinely_dispatched():
+    """Over-fire guard: Case 8 (case_08_stale_extract) IS in
+    _DATA_QUALITY_DISPATCH -- its own real data_quality_issues entry means
+    the data_quality_overclaim check never even runs for it (see
+    checks_run), the same way it must never flag a genuinely
+    checked-and-clean dispatched scenario if one existed."""
+    entry = _ENTRY_BY_ID["case_08_stale_extract"]
+    prose = (
+        "This data-quality issue accounts for the entire gap, and we have a confirmed "
+        "cause for the discrepancy. The unexplained residual is -$150.00, which is a "
+        "separate fact from the reconciled cause. It does not indicate the existence of "
+        "other causes or the need for further investigation. The residual is simply a "
+        "remaining amount that is not explained by the data-quality issue."
+    )
+    score = score_scenario(entry, prose)
+    assert "data_quality_overclaim" not in score.unsupported_claim_patterns
+    assert "data_quality_overclaim" not in score.checks_run
+
+
+def test_data_quality_overclaim_check_runs_but_stays_silent_on_honest_undispatched_prose():
+    """The correct, fixed behavior (Build 3, Day 5, Part 4, Task 1's own
+    live-verified prompt fix): an undispatched scenario whose response
+    honestly states uncertainty, rather than claiming confirmed
+    cleanliness, must not be flagged -- the check runs (dispatch status
+    makes it applicable) but finds nothing to flag."""
+    entry = _ENTRY_BY_ID["case_01_join_type"]
+    prose = (
+        "A join-type mismatch has a dollar impact of $300.00. No data-quality issues were "
+        "checked for this investigation, so it's unclear whether the data is fresh, "
+        "complete, or clean. The unexplained residual is $0.00."
+    )
+    score = score_scenario(entry, prose)
+    assert "data_quality_overclaim" not in score.unsupported_claim_patterns
+    assert "data_quality_overclaim" in score.checks_run
+
+
+def test_residual_self_contradiction_widened_gate_detects_case_2_real_transcript():
+    """The actual finding #2 target (decision 36, PR #128's fresh Case 2
+    transcript, the false-escalation probe): Case 2 has
+    data_quality_issues=[] and unexplained_residual=0.0 -- before this
+    widening, residual_self_contradiction was never even attempted here
+    (gated on data_quality_issues alone). The hedge ('additional factors
+    at play') is the same class of unsupported claim this check already
+    catches elsewhere, now reachable on a definitional-only, zero-residual
+    scenario too. This transcript's own real negation ('did not identify
+    any other causes...') sits in a DIFFERENT clause, joined by ', and' --
+    proving the clause-boundary widening (not just the gate widening) is
+    what makes this detectable; a plain sentence-boundary guard falsely
+    treated the earlier, unrelated 'not' as covering this violation."""
+    entry = _ENTRY_BY_ID["case_02_multi_cause"]
+    prose = (
+        "The investigation into the discrepancy between the two sources has identified "
+        "several reconciled causes and definitional differences that contribute to the "
+        "gap. The unexplained residual is $0.00, which means that the gap is fully "
+        "explained by the causes found. However, it is essential to acknowledge that the "
+        "investigation did not identify any other causes beyond those mentioned, and it "
+        "is possible that there may be additional factors at play that were not captured "
+        "by this analysis."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" in score.unsupported_claim_patterns
+    assert "residual_self_contradiction" in score.checks_run
+
+
+def test_residual_self_contradiction_widened_gate_stays_silent_on_clean_zero_residual_prose():
+    """Over-fire guard: a genuinely clean, zero-residual, fully-explained
+    response (no data-quality issues either) must not be flagged just
+    because the widened gate now runs this check for it."""
+    entry = _ENTRY_BY_ID["case_01_join_type"]
+    prose = (
+        "A join-type mismatch has a dollar impact of $300.00. No other differences were "
+        "found, and the unexplained residual is $0.00 -- the gap is fully explained by "
+        "this cause."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" not in score.unsupported_claim_patterns
+    assert "residual_self_contradiction" in score.checks_run
+
+
+def test_clause_boundary_widening_does_not_break_case_10_compound_negation_fix():
+    """Regression guard: Build 3, Day 5, Part 4 widened the negation-guard's
+    boundary regex (comma + coordinating conjunction, not just sentence-
+    ending punctuation) to fix Case 2's false negative above. Case 10's
+    own compound-negation fix (Build 3, Day 4, Part 8, Task 1, decision 32)
+    must still hold -- its 'not' sits before its own ', but' boundary
+    marker, so the window from that boundary to the violating phrase still
+    contains the real negation."""
+    entry = _ENTRY_BY_ID["case_10_referential_integrity"]
+    prose = (
+        "This data-quality issue is a confirmed cause of the discrepancy, and it fully "
+        "explains the gap. The unexplained residual is +$300.00, but this is not evidence "
+        "that additional causes exist or that further investigation is needed. The "
+        "data-quality issue is a complete and confirmed finding in its own right."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" not in score.unsupported_claim_patterns
 
 
 def test_detects_fact_doubling_on_realistic_prose():

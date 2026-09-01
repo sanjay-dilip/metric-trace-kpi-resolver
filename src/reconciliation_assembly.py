@@ -330,6 +330,27 @@ solution to that is proposed or implied here.
 """
 
 
+def is_data_quality_dispatched(scenario_id: str) -> bool:
+    """Whether `scenario_id` has an entry in `_DATA_QUALITY_DISPATCH` --
+    i.e. whether a data-quality/freshness check was actually RUN for it
+    (regardless of whether it found an issue), as opposed to no check
+    ever having been attempted. `_resolve_data_quality_issues` collapses
+    both of those cases to the same observable shape (`data_quality_issues
+    == []`) on `InvestigationEvidence`, which is exactly the ambiguity
+    Build 3, Day 5, Part 3's transcript re-audit found being silently
+    misread as "checked and confirmed clean" (decision 36, Case 3: "data-
+    quality issues were also found to be zero, indicating that the data
+    is fresh and complete," when no check was ever dispatched for that
+    scenario at all).
+
+    Exposed as a small public accessor -- rather than a caller reaching
+    into the module-private `_DATA_QUALITY_DISPATCH` dict directly --
+    specifically so `src/explainer.py`'s prompt construction (Build 3,
+    Day 5, Part 4) can know and state dispatch status explicitly without
+    depending on this module's internal table structure."""
+    return scenario_id in _DATA_QUALITY_DISPATCH
+
+
 def _resolve_data_quality_issues(scenario: Scenario, seed_db_path_a: str, seed_db_path_b: str) -> list[DataQualityIssue]:
     """Look up scenario.scenario_id in _DATA_QUALITY_DISPATCH and run the
     one check it names, if any. A scenario_id with no entry returns []
