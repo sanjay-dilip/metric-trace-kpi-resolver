@@ -369,6 +369,129 @@ def test_case_20_one_sided_violation_now_detected_from_real_fresh_prose():
     assert "residual_self_contradiction" in score.unsupported_claim_patterns
 
 
+# --- Build 3, Day 5, Part 1: regression tests for decision 33's own named ---
+# --- follow-up -- the hand-written phrase list's paraphrase-sensitivity gap. ---
+# --- Every prose string below is quoted verbatim from an already-recorded ---
+# --- live transcript (docs/decisions.md decision 30, or PR #136's 6-scenario ---
+# --- comparison run), not newly generated or synthetic. ---
+
+
+def test_case_20_paraphrase_violation_from_comparison_run_now_detected():
+    """The actual gap decision 33 named: PR #136's fresh Case 20 comparison-
+    run transcript (Build 3, Day 4, Part 8, Task 3) violates the residual-
+    framing constraint using wording the fixed phrase list did not cover --
+    'not accounted for' (no 'yet', so it missed 'not yet accounted for')
+    and 'the entire gap remains unexplained' (not on the list at all).
+    This is a fixed-phrase-list coverage gap, not the co-occurrence gap --
+    that was already fixed in Build 3, Day 4, Part 8, Task 1 (decision 32),
+    see test_case_20_one_sided_violation_now_detected_from_real_fresh_prose
+    above, which already passes against the OLDER Case 20 quote."""
+    entry = _ENTRY_BY_ID["case_20_stale_extract_join_collision"]
+    prose = (
+        "The investigation into the discrepancy between the two sources found that the "
+        "main cause of the gap is the difference in join types used by the two sources. "
+        "Source A uses a LEFT JOIN, while source B uses an INNER JOIN on the same join "
+        "condition (o.customer_id = c.customer_id), resulting in a dollar impact of "
+        "+$300.00.\n\n"
+        "In addition to the reconciled causes, the investigation also identified a "
+        "data-quality issue. Source A's as-delivered snapshot has 3 rows in 'orders', "
+        "but the complete counterfactual snapshot has 4 rows, resulting in a +1 row(s) "
+        "difference. This data-quality issue has a confidence level of high and a "
+        "dollar impact of -$200.00.\n\n"
+        "The unexplained residual of -$200.00 indicates that the gap is not fully "
+        "explained by the causes found. This means that there may be other underlying "
+        "causes that are not accounted for in this investigation.\n\n"
+        "No cause was identified for the remaining gap, and the entire gap remains "
+        "unexplained."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" in score.unsupported_claim_patterns
+
+
+def test_case_8_clean_pass_still_not_flagged_after_paraphrase_fix():
+    """Regression guard: Case 8's original decision-30 clean-pass transcript
+    (Build 3, Day 4, Part 1's live verification) must still score zero false
+    positives after adding the two new phrases -- it never claims a cause is
+    unaccounted for or that a gap remains unexplained."""
+    entry = _ENTRY_BY_ID["case_08_stale_extract"]
+    prose = (
+        "This data-quality issue accounts for the entire gap, and we have a confirmed "
+        "cause for the discrepancy. The unexplained residual is -$150.00, which is a "
+        "separate fact from the reconciled cause. It does not indicate the existence "
+        "of other causes or the need for further investigation. The residual is simply "
+        "a remaining amount that is not explained by the data-quality issue."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" not in score.unsupported_claim_patterns
+
+
+def test_case_9_borderline_transcript_still_not_flagged_after_paraphrase_fix():
+    """Regression guard, the one this fix's own scoping had to be most
+    careful about: Case 9's original decision-30 transcript ('there is
+    still a gap that remains unexplained') is worded about the RESIDUAL
+    remaining unexplained, not about un-accounted-for CAUSES -- decision 30
+    itself calls this borderline wording, not a real violation. The new
+    'gap remains unexplained' phrase requires exact adjacency and must NOT
+    match Case 9's 'gap that remains unexplained' (a 'that' sits between
+    the two words) -- if it did, this would be a brand-new false positive
+    this fix introduced, not a fix."""
+    entry = _ENTRY_BY_ID["case_09_missing_partition"]
+    prose = (
+        "The unexplained residual figure is -$250.00. This means that even after "
+        "accounting for the data-quality issue, there is still a gap that remains "
+        "unexplained. However, it's essential to note that the residual does not "
+        "necessarily imply the existence of other causes or the need for further "
+        "investigation."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" not in score.unsupported_claim_patterns
+
+
+def test_case_10_still_flagged_after_paraphrase_fix():
+    """Regression guard: Case 10's original decision-30 transcript was
+    already correctly flagged (via the pre-existing 'other factors at
+    play'/'other causes may exist' phrases) -- must remain flagged, not
+    lose the detection or double-count differently, after adding the two
+    new phrases."""
+    entry = _ENTRY_BY_ID["case_10_referential_integrity"]
+    prose = (
+        "This data-quality issue is a complete and confirmed finding, and we can say "
+        "that it accounts for a portion of the gap. However, we must also consider the "
+        "unexplained residual, which is +$300.00. This means that the reconciled "
+        "causes we found do not fully explain the discrepancy, and there may be other "
+        "factors at play. It's worth noting that the unexplained residual does not "
+        "include or account for the data-quality issue we identified. By the "
+        "project's own accounting convention, a data-quality issue's dollar impact is "
+        "never subtracted out of the residual. Therefore, the nonzero residual is not "
+        "evidence that the data-quality cause only partially explains the gap, and it "
+        "is not grounds to say other causes may exist or that further investigation "
+        "is needed."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" in score.unsupported_claim_patterns
+
+
+def test_case_11_still_flagged_after_paraphrase_fix():
+    """Regression guard: Case 11's original decision-30 transcript was
+    already correctly flagged (via the pre-existing 'other causes may
+    exist'/'further investigation is needed' phrases), and it happens to
+    ALSO contain 'the entire gap remains unexplained' verbatim -- the exact
+    new phrase this fix adds. Confirms the addition doesn't change Case
+    11's already-correct verdict, only gives it a second, independent
+    matching reason."""
+    entry = _ENTRY_BY_ID["case_11_referential_integrity_source_b"]
+    prose = (
+        "The data-quality issue is a complete and confirmed finding in its own right, "
+        "and we should not assume that other causes may exist or that further "
+        "investigation is needed. In summary, while we have identified a data-quality "
+        "issue that contributes to the discrepancy, the entire gap remains "
+        "unexplained, and the residual figure of -$300.00 indicates that further "
+        "investigation is needed to fully understand the causes of the discrepancy."
+    )
+    score = score_scenario(entry, prose)
+    assert "residual_self_contradiction" in score.unsupported_claim_patterns
+
+
 def test_detects_fact_doubling_on_realistic_prose():
     """Modeled directly on Case 4's own fresh live-verification quote
     (decision 32): one real $200 cause narrated as two, summed to a
