@@ -21,11 +21,8 @@ proven in tests/test_structural_definitional_precedence.py. Case 3 is
 included below as a normal, working case now that the collision is
 resolved."""
 
-import pytest
-
 from config import DATA_SAMPLE_DIR
 from src.definition_diff import diff_definitions
-from src.query_mutation import DateFieldCorrectionAmbiguous
 from src.reconciliation_assembly import assemble_reconciliation_line_items
 from src.scenario import DashboardSource
 from src.schema import DefinitionDifference
@@ -64,12 +61,13 @@ def test_case_1_single_cause_join_type():
     )
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
 
-    items, data_quality_issues = assemble_reconciliation_line_items(
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
         CASE_1_JOIN_TYPE.source_a, CASE_1_JOIN_TYPE.source_b, db_a, sql_diffs, dd, sci
     )
 
     assert len(items) == 1
     assert data_quality_issues == []
+    assert escalations == []
     assert items[0].computed_by == "single_cause_attribution"
     assert items[0].dollar_impact == 300.0
     assert items[0].dollar_impact > 0
@@ -95,7 +93,7 @@ def test_case_2_shapley_interacting_pair():
     excluded_statuses_diff = next(d for d in dd if d.field == "excluded_statuses")
     aggregation_diff = next(d for d in dd if d.field == "aggregation")
 
-    items, data_quality_issues = assemble_reconciliation_line_items(
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
         CASE_2_MULTI_CAUSE.source_a,
         CASE_2_MULTI_CAUSE.source_b,
         db_a,
@@ -107,6 +105,7 @@ def test_case_2_shapley_interacting_pair():
 
     assert len(items) == 2
     assert data_quality_issues == []
+    assert escalations == []
     excluded_item = next(item for item in items if "excluded_statuses" in item.cause)
     aggregation_item = next(item for item in items if "aggregation" in item.cause)
 
@@ -142,7 +141,7 @@ def test_case_3_shapley_interacting_pair_after_decision_12_suppression():
     date_field_diff = next(d for d in dd if d.field == "date_field")
     excluded_statuses_diff = next(d for d in dd if d.field == "excluded_statuses")
 
-    items, data_quality_issues = assemble_reconciliation_line_items(
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
         CASE_3_HYBRID_FALLBACK.source_a,
         CASE_3_HYBRID_FALLBACK.source_b,
         db_a,
@@ -154,6 +153,7 @@ def test_case_3_shapley_interacting_pair_after_decision_12_suppression():
 
     assert len(items) == 2
     assert data_quality_issues == []
+    assert escalations == []
     date_field_item = next(item for item in items if "date_field" in item.cause)
     excluded_item = next(item for item in items if "excluded_statuses" in item.cause)
 
@@ -181,12 +181,13 @@ def test_case_4_self_consistency_only():
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
     assert dd == []
 
-    items, data_quality_issues = assemble_reconciliation_line_items(
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
         CASE_4_GOVERNANCE_DRIFT.source_a, CASE_4_GOVERNANCE_DRIFT.source_b, db_a, sql_diffs, dd, sci
     )
 
     assert len(items) == 1
     assert data_quality_issues == []
+    assert escalations == []
     assert items[0].computed_by == "self_consistency_correction"
     assert items[0].dollar_impact == 200.0
     assert CASE_4_GOVERNANCE_DRIFT.known_gap > 0  # same sign
@@ -207,12 +208,13 @@ def test_case_7_self_consistency_plus_suppressed_cross_source():
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
     assert dd == []  # suppressed from the reported findings list
 
-    items, data_quality_issues = assemble_reconciliation_line_items(
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
         CASE_7_PRECEDENCE_CONFLICT.source_a, CASE_7_PRECEDENCE_CONFLICT.source_b, db_a, sql_diffs, dd, sci
     )
 
     assert len(items) == 1
     assert data_quality_issues == []
+    assert escalations == []
     assert items[0].computed_by == "self_consistency_correction+suppressed_cross_source"
     assert items[0].dollar_impact == 200.0
     assert items[0].dollar_impact == CASE_7_PRECEDENCE_CONFLICT.known_gap
@@ -256,9 +258,10 @@ def test_single_cause_line_item_routes_zero_date_columns_as_data_quality_issue()
         confidence="low",
     )
 
-    items, data_quality_issues = assemble_reconciliation_line_items(source_a, source_b, db_a, [], [difference], [])
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(source_a, source_b, db_a, [], [difference], [])
 
     assert items == []
+    assert escalations == []
     assert len(data_quality_issues) == 1
     issue = data_quality_issues[0]
     assert issue.category == "no_date_filter"
@@ -267,16 +270,23 @@ def test_single_cause_line_item_routes_zero_date_columns_as_data_quality_issue()
     assert "NOT COMPUTED" in issue.description
 
 
-def test_single_cause_line_item_propagates_ambiguous_date_columns_uncaught():
-    """Build 3, Day 2 cleanup, Part 1, item 3: source_a's SQL filters on
-    TWO date-like columns (order_date AND created_at, both real columns on
-    case_03_hybrid_fallback's own orders table) -- which one to correct is
-    genuinely ambiguous. DateFieldCorrectionAmbiguous propagates uncaught,
-    matching this project's "escalate, don't guess" convention (the same
-    shape as assemble_investigation_evidence's own 3+-remaining-causes
-    guard) rather than being silently routed anywhere -- a future caller
-    (e.g. a confidence/escalation consumer) can catch this specific type
-    even though none exists yet."""
+def test_single_cause_line_item_routes_ambiguous_date_columns_as_escalation():
+    """Build 3, Day 2 cleanup, Part 1's own verification pass (decision 40
+    update): source_a's SQL filters on TWO date-like columns (order_date
+    AND created_at, both real columns on case_03_hybrid_fallback's own
+    orders table) -- which one to correct is genuinely ambiguous.
+
+    The original Part 1 design let DateFieldCorrectionAmbiguous propagate
+    uncaught here, reasoning it matched this project's "escalate, don't
+    guess" convention. Re-verified against a REAL fixture run through the
+    FULL assemble_investigation_evidence pipeline (not this isolated call
+    alone -- see the fixture built for that check) and found this
+    reasoning wrong: an uncaught exception aborts the whole investigation,
+    producing no evidence at all, not an escalation a human could act on.
+    Fixed to match the original brief's own requirement instead: `items`
+    stays empty, `escalations` carries a CorrectionEscalation naming the
+    ambiguity plainly -- assemble_reconciliation_line_items now COMPLETES
+    normally rather than raising."""
     db_a = str(DATA_SAMPLE_DIR / "case_03_hybrid_fallback_a.duckdb")
     source_a = DashboardSource(
         label="a",
@@ -299,5 +309,13 @@ def test_single_cause_line_item_propagates_ambiguous_date_columns_uncaught():
         confidence="low",
     )
 
-    with pytest.raises(DateFieldCorrectionAmbiguous):
-        assemble_reconciliation_line_items(source_a, source_b, db_a, [], [difference], [])
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
+        source_a, source_b, db_a, [], [difference], []
+    )
+
+    assert items == []
+    assert data_quality_issues == []
+    assert len(escalations) == 1
+    escalation = escalations[0]
+    assert "ambiguous" in escalation.reason
+    assert "created_at" in escalation.reason and "order_date" in escalation.reason

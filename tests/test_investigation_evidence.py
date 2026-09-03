@@ -573,3 +573,70 @@ def test_case_21_fully_reconciles_filter_add_direction():
     assert total == CASE_21_FILTER_ADD_DIRECTION.known_gap == 200.0
     assert evidence.unexplained_residual == 0.0
     assert CASE_21_FILTER_ADD_DIRECTION in SCENARIOS
+
+
+def test_ambiguous_date_columns_reaches_full_pipeline_as_a_completed_escalation():
+    """Build 3, Day 2 cleanup, Part 1's own verification pass (decision 40
+    update): proves, via the REAL full assemble_investigation_evidence
+    pipeline (not an isolated call to assemble_reconciliation_line_items
+    alone), that a genuinely ambiguous date_field correction (source_a
+    filters on TWO real date-like columns, order_date AND created_at,
+    both present on case_03_hybrid_fallback's own orders table) no longer
+    aborts the whole investigation.
+
+    Traced by hand before this fix (via a throwaway script, not committed):
+    assemble_investigation_evidence(scenario) raised
+    src.query_mutation.DateFieldCorrectionAmbiguous uncaught -- no
+    InvestigationEvidence was produced at all for this scenario, directly
+    contradicting the original brief's own requirement that a genuinely
+    ambiguous correction "should still produce a clearly-typed 'escalate'
+    result." Confirmed fixed here: the call now completes normally and
+    the ambiguity is visible as a real CorrectionEscalation, not silently
+    dropped and not guessed at.
+
+    Not registered in SCENARIOS -- like Case 12/13, this fixture's job is
+    proving one specific mechanism on freshly constructed data, not
+    benchmark participation. source_a's own SelfConsistencyIssue
+    (declared 'created_at' vs its SQL's own inferred pick 'order_date',
+    since both sides declare the SAME definition) is a real, expected
+    byproduct of this construction, not a second bug -- asserted on
+    explicitly below so it isn't mistaken for interference with the
+    escalation being tested."""
+    declared = DeclaredDefinition(date_field="created_at", excluded_statuses=[], aggregation="sum")
+    source_a = DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE order_date >= '2024-01-01' AND created_at >= '2024-01-01'"
+        ),
+        declared_definition=declared,
+    )
+    source_b = DashboardSource(
+        label="finance_query",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01'",
+        declared_definition=declared,
+    )
+    scenario = Scenario(
+        scenario_id="scratch_ambiguous_date_columns_full_pipeline",
+        description="Proof fixture: source_a filters on two real date-like columns at once.",
+        source_a=source_a,
+        source_b=source_b,
+        reported_value_a=550.0,
+        reported_value_b=1050.0,
+        known_gap=550.0 - 1050.0,
+        seed_table="case_03_hybrid_fallback",
+    )
+
+    evidence = assemble_investigation_evidence(scenario)
+
+    assert [d.category for d in evidence.sql_differences] == ["date_field"]
+    assert len(evidence.escalations) == 1
+    escalation = evidence.escalations[0]
+    assert "ambiguous" in escalation.reason
+    assert "created_at" in escalation.reason and "order_date" in escalation.reason
+    assert evidence.data_quality_issues == []
+    # source_b's own SQL contradicts source_b's declared 'created_at' (its SQL
+    # only ever filters on order_date) -- a real, expected self-consistency
+    # finding this construction produces, not evidence the escalation failed.
+    assert len(evidence.reconciliation) == 1
+    assert evidence.reconciliation[0].computed_by == "self_consistency_correction"

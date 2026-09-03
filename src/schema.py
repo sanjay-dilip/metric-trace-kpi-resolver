@@ -138,6 +138,38 @@ class DataQualityIssue(BaseModel):
     dollar_impact: float
 
 
+class CorrectionEscalation(BaseModel):
+    """A correction the deterministic core could not safely attempt because
+    doing so would require GUESSING among multiple equally-plausible
+    options (e.g. which of several date-like columns governs a metric,
+    when the two sides genuinely disagree on the column to use) -- named
+    plainly as needing a human decision, never silently guessed at and
+    never silently dropped. Build 3, Day 2 cleanup, Part 1's verification
+    pass (decision 40, docs/decisions.md): the original design let this
+    case propagate as an uncaught exception, aborting the whole
+    investigation with no evidence produced at all -- re-verified against
+    a real fixture and found to do exactly that, contradicting this
+    project's own "escalate, don't guess" principle (an investigation
+    that produces nothing is not an escalation, it is a crash). This type
+    is the fix: the same additive-evidence shape DataQualityIssue already
+    established, but deliberately NOT a DataQualityIssue itself -- an
+    unresolved AMBIGUITY in what the correct correction even is is not a
+    freshness/completeness/referential-integrity fact, and forcing it
+    into that category's vocabulary would misdescribe it.
+
+    Like DataQualityIssue, this is ADDITIVE EVIDENCE ONLY (see
+    InvestigationEvidence's own docstring): it does not participate in
+    reconciliation or unexplained_residual. No dollar_impact field --
+    unlike DataQualityIssue's "no_date_filter" category (which at least
+    knows dollar_impact is 0.0/NOT COMPUTED), a genuinely ambiguous
+    correction has no defensible placeholder value at all, not even an
+    explicitly-caveated one; asserting ANY number here would misrepresent
+    a question this schema cannot answer."""
+
+    cause: str
+    reason: str
+
+
 class ReconciliationLineItem(BaseModel):
     """One confirmed cause's contribution to the total dollar gap, with the
     computation that produced it named for traceability back to a specific
@@ -166,11 +198,19 @@ class InvestigationEvidence(BaseModel):
     referential-integrity orphan finding both quantify the same $300
     correction independently) -- never sum a data_quality_issues figure
     against reconciliation's total, in a report, a reader's own math, or a
-    future explainer prompt."""
+    future explainer prompt.
+
+    escalations (Build 3, Day 2 cleanup, Part 1 verification pass,
+    decision 40): a list of CorrectionEscalation, ADDITIVE EVIDENCE ONLY
+    like data_quality_issues -- populated when a correction could not be
+    attempted because which column/value to use is genuinely ambiguous,
+    not guessed at and not silently dropped. Empty for every scenario
+    where no correction hit this case."""
 
     definition_differences: list[DefinitionDifference]
     self_consistency_issues: list[SelfConsistencyIssue]
     sql_differences: list[SQLStructuralDifference]
     data_quality_issues: list[DataQualityIssue]
+    escalations: list[CorrectionEscalation]
     reconciliation: list[ReconciliationLineItem]
     unexplained_residual: float
