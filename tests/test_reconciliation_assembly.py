@@ -24,6 +24,8 @@ resolved."""
 from config import DATA_SAMPLE_DIR
 from src.definition_diff import diff_definitions
 from src.reconciliation_assembly import assemble_reconciliation_line_items
+from src.scenario import DashboardSource
+from src.schema import DefinitionDifference, SQLStructuralDifference
 from src.self_consistency import (
     assemble_definitional_evidence_with_dollar_impacts,
     assemble_structural_and_definitional_evidence,
@@ -59,11 +61,13 @@ def test_case_1_single_cause_join_type():
     )
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
 
-    items = assemble_reconciliation_line_items(
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
         CASE_1_JOIN_TYPE.source_a, CASE_1_JOIN_TYPE.source_b, db_a, sql_diffs, dd, sci
     )
 
     assert len(items) == 1
+    assert data_quality_issues == []
+    assert escalations == []
     assert items[0].computed_by == "single_cause_attribution"
     assert items[0].dollar_impact == 300.0
     assert items[0].dollar_impact > 0
@@ -89,7 +93,7 @@ def test_case_2_shapley_interacting_pair():
     excluded_statuses_diff = next(d for d in dd if d.field == "excluded_statuses")
     aggregation_diff = next(d for d in dd if d.field == "aggregation")
 
-    items = assemble_reconciliation_line_items(
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
         CASE_2_MULTI_CAUSE.source_a,
         CASE_2_MULTI_CAUSE.source_b,
         db_a,
@@ -100,6 +104,8 @@ def test_case_2_shapley_interacting_pair():
     )
 
     assert len(items) == 2
+    assert data_quality_issues == []
+    assert escalations == []
     excluded_item = next(item for item in items if "excluded_statuses" in item.cause)
     aggregation_item = next(item for item in items if "aggregation" in item.cause)
 
@@ -135,7 +141,7 @@ def test_case_3_shapley_interacting_pair_after_decision_12_suppression():
     date_field_diff = next(d for d in dd if d.field == "date_field")
     excluded_statuses_diff = next(d for d in dd if d.field == "excluded_statuses")
 
-    items = assemble_reconciliation_line_items(
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
         CASE_3_HYBRID_FALLBACK.source_a,
         CASE_3_HYBRID_FALLBACK.source_b,
         db_a,
@@ -146,6 +152,8 @@ def test_case_3_shapley_interacting_pair_after_decision_12_suppression():
     )
 
     assert len(items) == 2
+    assert data_quality_issues == []
+    assert escalations == []
     date_field_item = next(item for item in items if "date_field" in item.cause)
     excluded_item = next(item for item in items if "excluded_statuses" in item.cause)
 
@@ -173,11 +181,13 @@ def test_case_4_self_consistency_only():
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
     assert dd == []
 
-    items = assemble_reconciliation_line_items(
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
         CASE_4_GOVERNANCE_DRIFT.source_a, CASE_4_GOVERNANCE_DRIFT.source_b, db_a, sql_diffs, dd, sci
     )
 
     assert len(items) == 1
+    assert data_quality_issues == []
+    assert escalations == []
     assert items[0].computed_by == "self_consistency_correction"
     assert items[0].dollar_impact == 200.0
     assert CASE_4_GOVERNANCE_DRIFT.known_gap > 0  # same sign
@@ -198,11 +208,151 @@ def test_case_7_self_consistency_plus_suppressed_cross_source():
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
     assert dd == []  # suppressed from the reported findings list
 
-    items = assemble_reconciliation_line_items(
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
         CASE_7_PRECEDENCE_CONFLICT.source_a, CASE_7_PRECEDENCE_CONFLICT.source_b, db_a, sql_diffs, dd, sci
     )
 
     assert len(items) == 1
+    assert data_quality_issues == []
+    assert escalations == []
     assert items[0].computed_by == "self_consistency_correction+suppressed_cross_source"
     assert items[0].dollar_impact == 200.0
     assert items[0].dollar_impact == CASE_7_PRECEDENCE_CONFLICT.known_gap
+
+
+def test_single_cause_line_item_routes_zero_date_columns_as_data_quality_issue():
+    """Build 3, Day 2 cleanup, Part 1, item 2: source_a's SQL does not
+    filter by date at all (reusing case_03_hybrid_fallback's real seed
+    data, stripped of its own date predicate) -- construct_corrected_query
+    would have raised ValueError unconditionally before this fix. Now
+    routed as additive data-quality evidence (category="no_date_filter"),
+    not a crash and not a ReconciliationLineItem: `items` stays empty,
+    `data_quality_issues` carries the finding with an explicit
+    "NOT COMPUTED" dollar_impact caveat.
+
+    Deliberately isolated at this function's own level (a hand-picked
+    single DefinitionDifference, sql_differences=[]) rather than run
+    through assemble_investigation_evidence's full orchestration: sql_diff
+    independently fires its own structural date_field finding for this
+    exact shape too (a "(no date filter)" snippet never satisfies decision
+    12's same-column-match suppression check), which would land in
+    _shapley_pair_line_items's 2-remaining-cause branch -- deliberately
+    NOT given this same catch (see _single_cause_line_item's own
+    docstring for why). This test proves the single-cause mechanism
+    itself is real and reachable, independent of that separate,
+    out-of-scope limitation."""
+    db_a = str(DATA_SAMPLE_DIR / "case_03_hybrid_fallback_a.duckdb")
+    source_a = DashboardSource(
+        label="a", sql="SELECT SUM(amount) AS revenue FROM orders WHERE status != 'cancelled'", declared_definition=None
+    )
+    source_b = DashboardSource(
+        label="b",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE status != 'cancelled' AND order_date >= '2024-01-01'",
+        declared_definition=None,
+    )
+    difference = DefinitionDifference(
+        field="date_field",
+        source_a_value="(none found)",
+        source_b_value="order_date",
+        source="inferred",
+        confidence="low",
+    )
+
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(source_a, source_b, db_a, [], [difference], [])
+
+    assert items == []
+    assert escalations == []
+    assert len(data_quality_issues) == 1
+    issue = data_quality_issues[0]
+    assert issue.category == "no_date_filter"
+    assert issue.source == "a"
+    assert issue.dollar_impact == 0.0
+    assert "NOT COMPUTED" in issue.description
+
+
+def test_single_cause_line_item_routes_ambiguous_date_columns_as_escalation():
+    """Build 3, Day 2 cleanup, Part 1's own verification pass (decision 40
+    update): source_a's SQL filters on TWO date-like columns (order_date
+    AND created_at, both real columns on case_03_hybrid_fallback's own
+    orders table) -- which one to correct is genuinely ambiguous.
+
+    The original Part 1 design let DateFieldCorrectionAmbiguous propagate
+    uncaught here, reasoning it matched this project's "escalate, don't
+    guess" convention. Re-verified against a REAL fixture run through the
+    FULL assemble_investigation_evidence pipeline (not this isolated call
+    alone -- see the fixture built for that check) and found this
+    reasoning wrong: an uncaught exception aborts the whole investigation,
+    producing no evidence at all, not an escalation a human could act on.
+    Fixed to match the original brief's own requirement instead: `items`
+    stays empty, `escalations` carries a CorrectionEscalation naming the
+    ambiguity plainly -- assemble_reconciliation_line_items now COMPLETES
+    normally rather than raising."""
+    db_a = str(DATA_SAMPLE_DIR / "case_03_hybrid_fallback_a.duckdb")
+    source_a = DashboardSource(
+        label="a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders WHERE status != 'cancelled' "
+            "AND order_date >= '2024-01-01' AND created_at >= '2024-01-01'"
+        ),
+        declared_definition=None,
+    )
+    source_b = DashboardSource(
+        label="b",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE status != 'cancelled' AND order_date >= '2024-01-01'",
+        declared_definition=None,
+    )
+    difference = DefinitionDifference(
+        field="date_field",
+        source_a_value="created_at",
+        source_b_value="order_date",
+        source="inferred",
+        confidence="low",
+    )
+
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(
+        source_a, source_b, db_a, [], [difference], []
+    )
+
+    assert items == []
+    assert data_quality_issues == []
+    assert len(escalations) == 1
+    escalation = escalations[0]
+    assert "ambiguous" in escalation.reason
+    assert "created_at" in escalation.reason and "order_date" in escalation.reason
+
+
+def test_single_cause_line_item_routes_unsupported_category_as_escalation():
+    """Follow-up to decision 40's verification pass, applying the same
+    catch-and-escalate fix to UnsupportedCorrectionCategory (grouping/other
+    -- src/query_mutation.py's own confirmed-no-mutation-rule categories)
+    that the verification pass already applied to DateFieldCorrectionAmbiguous.
+
+    Uses a real, constructed `grouping` SQLStructuralDifference (a
+    per-customer breakdown vs. a company-total query -- the same
+    fixture decision 40's own verification pass used to prove `grouping`
+    is a real, reachable finding, reused here against case_01's own
+    seed data) -- before this fix, this would have raised
+    UnsupportedCorrectionCategory uncaught through
+    assemble_reconciliation_line_items. Now completes normally with a
+    CorrectionEscalation, the same additive-evidence shape as the
+    date_field-ambiguous case."""
+    db_a = str(DATA_SAMPLE_DIR / "case_01_join_type_a.duckdb")
+    source_a = DashboardSource(
+        label="a", sql="SELECT customer_id, SUM(amount) AS revenue FROM orders GROUP BY customer_id", declared_definition=None
+    )
+    source_b = DashboardSource(label="b", sql="SELECT SUM(amount) AS revenue FROM orders", declared_definition=None)
+    difference = SQLStructuralDifference(
+        category="grouping",
+        description="source_a groups by ['customer_id'], source_b groups by (no GROUP BY)",
+        query_a_snippet="customer_id",
+        query_b_snippet="(no GROUP BY)",
+    )
+
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(source_a, source_b, db_a, [difference], [], [])
+
+    assert items == []
+    assert data_quality_issues == []
+    assert len(escalations) == 1
+    escalation = escalations[0]
+    assert "no automatic correction rule exists" in escalation.reason
+    assert "grouping" in escalation.reason

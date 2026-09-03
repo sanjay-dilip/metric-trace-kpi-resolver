@@ -32,6 +32,7 @@ _EMPTY_EVIDENCE = InvestigationEvidence(
     self_consistency_issues=[],
     sql_differences=[],
     data_quality_issues=[],
+    escalations=[],
     reconciliation=[],
     unexplained_residual=0.0,
 )

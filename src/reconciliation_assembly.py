@@ -52,10 +52,16 @@ from typing import Callable
 from config import DATA_SAMPLE_DIR
 from src.data_quality import check_missing_partition, check_referential_integrity, check_stale_extract
 from src.definition_diff import diff_definitions
-from src.query_mutation import construct_corrected_query
+from src.query_mutation import (
+    DateFieldCorrectionAmbiguous,
+    DateFieldCorrectionMissing,
+    UnsupportedCorrectionCategory,
+    construct_corrected_query,
+)
 from src.reconciliation import shapley_pair_attribution, single_cause_attribution
 from src.scenario import DashboardSource, Scenario
 from src.schema import (
+    CorrectionEscalation,
     DataQualityIssue,
     DefinitionDifference,
     InvestigationEvidence,
@@ -89,7 +95,7 @@ def _describe(difference: _Difference) -> str:
 
 def _single_cause_line_item(
     source_a: DashboardSource, source_b: DashboardSource, seed_db_path_a: str, difference: _Difference
-) -> ReconciliationLineItem:
+) -> tuple[ReconciliationLineItem | None, DataQualityIssue | None, CorrectionEscalation | None]:
     """One non-interacting cause, corrected on source A toward source B's
     value (construct_corrected_query's default target), attributed via
     single_cause_attribution (src/reconciliation.py, Day 5 Task 2, reused
@@ -100,13 +106,118 @@ def _single_cause_line_item(
     DefinitionDifference correction can adopt source_b's real threshold, not
     just its column name (see construct_corrected_query's own docstring) --
     a no-op for every other difference type/field, which ignore
-    other_side_sql entirely."""
-    corrected_sql = construct_corrected_query(source_a.sql, difference, other_side_sql=source_b.sql)
+    other_side_sql entirely.
+
+    Return shape (Build 3, Day 2 cleanup, Part 1, extended by that same
+    task's own verification pass, decision 40): a
+    (ReconciliationLineItem, None, None) triple on the normal path.
+
+    When correcting a `date_field` cause finds source A's SQL has ZERO
+    date-like columns at all (DateFieldCorrectionMissing,
+    src/query_mutation.py), this is NOT treated as a correction failure --
+    it returns (None, DataQualityIssue, None) instead, routing the finding
+    as additive data-quality evidence (category="no_date_filter",
+    src/schema.py) the same way Cases 8-11's dispatch-based checks already
+    are (assemble_investigation_evidence, below). dollar_impact on that
+    issue is 0.0 by convention, meaning NOT COMPUTED (there is no date
+    column to build a corrected query from) -- never "zero effect"; the
+    description states this explicitly so a reader cannot misread it,
+    matching this project's own "the caveat travels with the number"
+    discipline.
+
+    When correcting a `date_field` cause finds source A's SQL has MULTIPLE
+    date-like columns (DateFieldCorrectionAmbiguous), this returns
+    (None, None, CorrectionEscalation) instead -- verification pass
+    correction: the original Build 3, Day 2 cleanup, Part 1 design let
+    this propagate uncaught, on the reasoning that it matched this
+    project's existing "raise rather than guess" convention
+    (assemble_investigation_evidence's own 3+-remaining-causes guard,
+    below). Re-verified against a real, constructed fixture and found
+    that reasoning to be wrong in practice: an uncaught exception here
+    does not reach a human, it aborts assemble_investigation_evidence
+    entirely -- no InvestigationEvidence is produced at all, for the
+    WHOLE scenario, not just this one cause. That is a crash, not an
+    escalation, and directly contradicts this project's own "genuinely
+    ambiguous business-rule questions escalate to a human, not silently
+    dropped or guessed at" principle (project-brief.md) -- an
+    investigation that produces nothing cannot escalate anything. Fixed
+    to match the ORIGINAL brief's own stated requirement instead ("this
+    should still produce a clearly-typed 'escalate' result rather than
+    silently falling through, even if nothing reads it yet") --
+    CorrectionEscalation (src/schema.py) is that clearly-typed result,
+    additive evidence like DataQualityIssue, not participating in
+    reconciliation or unexplained_residual.
+
+    When `difference` is a `grouping` or `other` SQLStructuralDifference
+    (or any other category with no mutation rule at all --
+    UnsupportedCorrectionCategory, src/query_mutation.py), this ALSO
+    returns (None, None, CorrectionEscalation) rather than propagating
+    the exception -- the same fix, and the same reasoning, decision 40's
+    verification pass already applied to DateFieldCorrectionAmbiguous:
+    that pass found and named this exact gap live (a real, constructed
+    `grouping` fixture -- a per-customer breakdown dashboard vs. a
+    company-total dashboard -- aborted assemble_investigation_evidence
+    entirely, identical to the date_field crash), but deliberately left
+    it unfixed at the time because reframing the `grouping` evidentiary
+    claim was that task's own stated scope, not building new correction
+    or escalation surface. Closed here, on request, as the direct
+    follow-up: a category with NO mutation rule at all is exactly as
+    "needs a human, don't guess" as an AMBIGUOUS one -- both are cases
+    this deterministic core cannot safely resolve on its own, and both
+    now produce the same typed, additive result instead of a crash.
+
+    See this project's decision log for why a Shapley-pair member
+    (_shapley_pair_line_items, below) is deliberately NOT given this same
+    catch -- out of scope for this task, named explicitly rather than
+    silently expanded into."""
+    try:
+        corrected_sql = construct_corrected_query(source_a.sql, difference, other_side_sql=source_b.sql)
+    except UnsupportedCorrectionCategory as exc:
+        escalation = CorrectionEscalation(
+            cause=_describe(difference),
+            reason=(
+                f"no automatic correction rule exists for this category, so "
+                f"it could not be attributed a dollar figure -- not guessed "
+                f"at: {exc}"
+            ),
+        )
+        return None, None, escalation
+    except DateFieldCorrectionMissing:
+        issue = DataQualityIssue(
+            category="no_date_filter",
+            source="a",
+            description=(
+                f"source_a's SQL does not filter by date at all, so the "
+                f"date_field correction implied by this cause "
+                f"({_describe(difference)}) could not be constructed or "
+                "attributed a dollar figure. dollar_impact is 0.0 because it "
+                "is NOT COMPUTED -- this does not mean the cause has zero "
+                "effect."
+            ),
+            confidence="high",
+            dollar_impact=0.0,
+        )
+        return None, issue, None
+    except DateFieldCorrectionAmbiguous as exc:
+        escalation = CorrectionEscalation(
+            cause=_describe(difference),
+            reason=(
+                f"source_a's SQL has more than one date-like column, so which "
+                f"one to correct toward source_b's value is genuinely "
+                f"ambiguous -- not guessed at: {exc}"
+            ),
+        )
+        return None, None, escalation
+
     raw_delta = single_cause_attribution(seed_db_path_a, source_a.sql, corrected_sql)
-    return ReconciliationLineItem(
-        cause=_describe(difference),
-        dollar_impact=-raw_delta,
-        computed_by="single_cause_attribution",
+    return (
+        ReconciliationLineItem(
+            cause=_describe(difference),
+            dollar_impact=-raw_delta,
+            computed_by="single_cause_attribution",
+        ),
+        None,
+        None,
     )
 
 
@@ -178,11 +289,28 @@ def assemble_reconciliation_line_items(
     definition_differences: list[DefinitionDifference],
     self_consistency_issues: list[SelfConsistencyIssue],
     interacting_pairs: list[tuple[_Difference, _Difference]] | None = None,
-) -> list[ReconciliationLineItem]:
+) -> tuple[list[ReconciliationLineItem], list[DataQualityIssue], list[CorrectionEscalation]]:
     """Assemble every dollar-attributed cause -- Shapley-averaged
     interacting pairs, self-consistency issues (with Part A's folded
     dollar impacts), and clean single-cause differences with no known
     interaction -- into a list[ReconciliationLineItem].
+
+    Return shape (Build 3, Day 2 cleanup, Part 1, changed from a bare
+    list[ReconciliationLineItem]; extended to a 3-tuple by that same
+    task's own verification pass, decision 40): a
+    (line_items, additional_data_quality_issues, escalations) triple. The
+    second element is normally empty -- it is populated only when a
+    single-cause date_field correction found source A's SQL has no
+    date-like column at all (_single_cause_line_item's own
+    DateFieldCorrectionMissing handling, above), routed as additive
+    data-quality evidence instead of a ReconciliationLineItem. The third
+    element is likewise normally empty -- populated only when source A's
+    SQL has MULTIPLE date-like columns (DateFieldCorrectionAmbiguous),
+    genuinely ambiguous which one to correct. Callers
+    (assemble_investigation_evidence, below) must fold both into
+    InvestigationEvidence.data_quality_issues / .escalations respectively
+    -- never into `reconciliation` or unexplained_residual's arithmetic,
+    matching this project's existing additive-only convention.
 
     `definition_differences` and `sql_differences` must already be the
     pruned/suppressed evidence (assemble_definitional_evidence's and
@@ -212,6 +340,8 @@ def assemble_reconciliation_line_items(
     paired_differences: list[_Difference] = [d for pair in interacting_pairs for d in pair]
 
     line_items: list[ReconciliationLineItem] = []
+    additional_data_quality_issues: list[DataQualityIssue] = []
+    escalations: list[CorrectionEscalation] = []
 
     for difference_x, difference_y in interacting_pairs:
         line_items.extend(_shapley_pair_line_items(source_a, source_b, seed_db_path_a, difference_x, difference_y))
@@ -220,12 +350,20 @@ def assemble_reconciliation_line_items(
     for difference in all_cross_source_differences:
         if any(difference == paired for paired in paired_differences):
             continue
-        line_items.append(_single_cause_line_item(source_a, source_b, seed_db_path_a, difference))
+        line_item, data_quality_issue, escalation = _single_cause_line_item(
+            source_a, source_b, seed_db_path_a, difference
+        )
+        if line_item is not None:
+            line_items.append(line_item)
+        if data_quality_issue is not None:
+            additional_data_quality_issues.append(data_quality_issue)
+        if escalation is not None:
+            escalations.append(escalation)
 
     for issue in self_consistency_issues:
         line_items.append(_self_consistency_line_item(source_a, source_b, issue))
 
-    return line_items
+    return line_items, additional_data_quality_issues, escalations
 
 
 def _case_08_stale_extract(scenario: Scenario, seed_db_path_a: str, seed_db_path_b: str) -> DataQualityIssue | None:
@@ -480,7 +618,7 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
         )
     interacting_pairs = [(remaining_causes[0], remaining_causes[1])] if len(remaining_causes) == 2 else None
 
-    line_items = assemble_reconciliation_line_items(
+    line_items, correction_time_data_quality_issues, escalations = assemble_reconciliation_line_items(
         scenario.source_a,
         scenario.source_b,
         seed_db_path_a,
@@ -489,6 +627,17 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
         self_consistency_issues,
         interacting_pairs,
     )
+    # correction_time_data_quality_issues (Build 3, Day 2 cleanup, Part 1):
+    # discovered while attempting a date_field correction (a source with no
+    # date-like column at all), not via _DATA_QUALITY_DISPATCH's own lookup
+    # table -- merged in here, additive-only, exactly like the dispatch-based
+    # issues above (assemble_reconciliation_line_items's own docstring).
+    # escalations (Build 3, Day 2 cleanup, Part 1's own verification pass,
+    # decision 40): a genuinely ambiguous date_field correction (multiple
+    # date-like columns) -- also additive-only, threaded through as its own
+    # field rather than folded into data_quality_issues (see
+    # CorrectionEscalation's own docstring, src/schema.py, for why).
+    data_quality_issues = data_quality_issues + correction_time_data_quality_issues
 
     total_dollar_impact = sum(item.dollar_impact for item in line_items)
     unexplained_residual = scenario.known_gap - total_dollar_impact
@@ -498,6 +647,7 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
         self_consistency_issues=self_consistency_issues,
         sql_differences=sql_differences,
         data_quality_issues=data_quality_issues,
+        escalations=escalations,
         reconciliation=line_items,
         unexplained_residual=unexplained_residual,
     )

@@ -11,18 +11,29 @@ import pytest
 from config import DATA_SAMPLE_DIR
 from src.definition_diff import diff_definitions
 from src.query_mutation import (
+    DateFieldCorrectionAmbiguous,
+    DateFieldCorrectionMissing,
+    UnsupportedCorrectionCategory,
     apply_aggregation_correction,
     apply_date_field_correction,
+    apply_distinct_correction,
     apply_excluded_statuses_correction,
     apply_filter_correction,
+    apply_filter_removal,
     apply_join_type_correction,
     construct_corrected_query,
 )
+from src.reconciliation_assembly import assemble_investigation_evidence
 from src.schema import SQLStructuralDifference
 from src.sql_diff import diff_sql
 from src.sql_parser import parse_sql
 from tests.fixtures.ambiguous_scenarios import AMBIGUOUS_ATTRIBUTION, AMBIGUOUS_CUSTOMER_COUNTING
-from tests.fixtures.scenarios import CASE_1_JOIN_TYPE, CASE_2_MULTI_CAUSE, CASE_3_HYBRID_FALLBACK
+from tests.fixtures.scenarios import (
+    CASE_1_JOIN_TYPE,
+    CASE_2_MULTI_CAUSE,
+    CASE_3_HYBRID_FALLBACK,
+    CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION,
+)
 
 
 def _execute_scalar(db_path: str, sql: str) -> float:
@@ -285,36 +296,171 @@ def test_construct_corrected_query_dispatches_real_definition_differences():
     assert results == {"excluded_statuses": 200.0, "aggregation": 420.0}
 
 
-def test_construct_corrected_query_filter_reverse_direction_still_fails_loudly():
-    """'filter' gained a mutation rule in Build 3, Day 2, Part 13
-    (apply_filter_correction) -- but ADD direction only, correcting a side
-    MISSING the filter toward the other side's real predicate. This
-    fixture's shape is the REVERSE direction (source_a HAS the filter,
-    source_b's snippet is the "(no filter on this column)" placeholder --
-    the default target, per construct_corrected_query's "adopt B's value"
-    convention), which apply_filter_correction explicitly does not
-    support -- the dispatcher must still raise, not silently pass the SQL
-    through unmodified or misinterpret the placeholder as a real target."""
-    unsupported = SQLStructuralDifference(
-        category="filter",
-        description="source_a filters on 'region', source_b has no equivalent filter",
-        query_a_snippet="region = 'us'",
-        query_b_snippet="(no filter on this column)",
+def test_apply_filter_removal_matches_hand_computed_case_13_result():
+    """Build 3, Day 2 cleanup, Part 1: the REMOVE direction, proven directly
+    against CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION's real seed data --
+    source_a has an extraneous 'status NOT IN (\\'churned\\')' predicate,
+    source_b has none. Removing it entirely on source_a should reproduce
+    source_b's own real value (450.0), since both sides share the same
+    underlying orders data (see the fixture's own docstring)."""
+    db = str(DATA_SAMPLE_DIR / "case_13_filter_excluded_statuses_collision_a.duckdb")
+    mechanical = apply_filter_removal(
+        CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION.source_a.sql, "NOT status IN ('churned')"
     )
-    with pytest.raises(ValueError, match="filter"):
-        construct_corrected_query(CASE_2_MULTI_CAUSE.source_a.sql, unsupported)
+    assert _execute_scalar(db, CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION.source_a.sql) == 300.0
+    assert _execute_scalar(db, mechanical) == 450.0
 
 
-@pytest.mark.parametrize("category", ["distinct", "grouping", "other"])
-def test_construct_corrected_query_fails_loudly_on_every_uncovered_category(category):
-    """Same fail-loud contract for the three SQLStructuralDifference
-    categories with NO mutation rule at all -- distinct from 'filter'
-    (Part 13, above), which now has a rule for one direction only."""
-    unsupported = SQLStructuralDifference(
-        category=category,
+def test_apply_filter_removal_rejects_a_column_with_no_matching_predicate():
+    """Fail-loud check: own_filter_condition names a column `sql` does not
+    actually filter on -- ambiguous/wrong, not silently a no-op."""
+    with pytest.raises(ValueError, match="found 0"):
+        apply_filter_removal(CASE_2_MULTI_CAUSE.source_a.sql, "region = 'us'")
+
+
+def test_construct_corrected_query_filter_reverse_direction_now_succeeds_case_13():
+    """Build 3, Day 2, Part 13 built the ADD direction; Build 3, Day 2
+    cleanup, Part 1 built REMOVE (apply_filter_removal, above). This is
+    the real, previously-crashing full-pipeline case
+    (tests/test_investigation_evidence.py's own
+    test_case_13_full_pipeline_now_reconciles_the_filter_removal, which
+    this unit-level test complements): construct_corrected_query, given
+    CASE_13's real (unsuppressed) `filter` finding, must now reach the
+    SAME apply_filter_removal result as calling it directly."""
+    filter_difference = next(
+        d
+        for d in diff_sql(
+            parse_sql(CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION.source_a.sql),
+            parse_sql(CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION.source_b.sql),
+        )
+        if d.category == "filter"
+    )
+    db = str(DATA_SAMPLE_DIR / "case_13_filter_excluded_statuses_collision_a.duckdb")
+    mechanical = construct_corrected_query(
+        CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION.source_a.sql, filter_difference
+    )
+    assert _execute_scalar(db, mechanical) == 450.0
+
+
+def test_construct_corrected_query_fails_loudly_on_every_uncovered_category():
+    """Fail-loud contract for the two SQLStructuralDifference categories
+    with NO mutation rule at all (Build 3, Day 2 cleanup, Part 1 confirmed
+    neither is reachable in a realistic shape for this project -- see
+    src/query_mutation.py's module docstring). 'distinct' is no longer in
+    this list -- it gained a real mutation rule this same session (below)."""
+    for category in ("grouping", "other"):
+        unsupported = SQLStructuralDifference(
+            category=category,
+            description="test",
+            query_a_snippet="a",
+            query_b_snippet="b",
+        )
+        with pytest.raises(UnsupportedCorrectionCategory):
+            construct_corrected_query(CASE_2_MULTI_CAUSE.source_a.sql, unsupported)
+
+
+def test_apply_distinct_correction_matches_max_vs_count_distinct_over_fire_shape():
+    """Build 3, Day 2 cleanup, Part 1: 'distinct' is reachable via the
+    already-committed over-fire fixture
+    (tests/test_structural_definitional_precedence.py::
+    test_does_not_over_fire_on_unrelated_distinct_and_aggregation_findings --
+    COUNT(DISTINCT customer_id) vs MAX(customer_id), where decision 10's
+    suppression correctly does not fire). Proven here against real data
+    (reusing case_02_multi_cause's customers table, which has the
+    necessary status/signup_date columns): toggling A's DISTINCT off
+    should reproduce a plain COUNT over the same filtered rows."""
+    db = str(DATA_SAMPLE_DIR / "case_02_multi_cause_a.duckdb")
+    sql = "SELECT COUNT(DISTINCT customer_id) AS x FROM customers WHERE status NOT IN ('churned')"
+    plain_count = "SELECT COUNT(customer_id) AS x FROM customers WHERE status NOT IN ('churned')"
+
+    mechanical = apply_distinct_correction(sql, target_has_distinct=False)
+    assert _execute_scalar(db, mechanical) == _execute_scalar(db, plain_count)
+
+    round_tripped = apply_distinct_correction(mechanical, target_has_distinct=True)
+    assert _execute_scalar(db, round_tripped) == _execute_scalar(db, sql)
+
+
+def test_construct_corrected_query_distinct_category_defaults_from_query_b_snippet():
+    """End-to-end: construct_corrected_query's new 'distinct' branch
+    extracts its target from query_b_snippet by re-parsing it (distinct's
+    own snippets are each side's FULL raw SQL, per src.sql_diff._diff_distinct,
+    not a bare predicate) rather than requiring target_value explicitly."""
+    db = str(DATA_SAMPLE_DIR / "case_02_multi_cause_a.duckdb")
+    source_a_sql = "SELECT COUNT(DISTINCT customer_id) AS x FROM customers WHERE status NOT IN ('churned')"
+    source_b_sql = "SELECT MAX(customer_id) AS x FROM customers WHERE status NOT IN ('churned')"
+    difference = SQLStructuralDifference(
+        category="distinct",
+        description="source_a uses DISTINCT, source_b does not",
+        query_a_snippet=source_a_sql,
+        query_b_snippet=source_b_sql,
+    )
+    mechanical = construct_corrected_query(source_a_sql, difference)
+    assert _execute_scalar(db, mechanical) == _execute_scalar(
+        db, "SELECT COUNT(customer_id) AS x FROM customers WHERE status NOT IN ('churned')"
+    )
+
+
+def test_construct_corrected_query_date_field_category_defaults_from_query_b_snippet():
+    """Build 3, Day 2 cleanup, Part 1: the target_value plumbing gap. Before
+    this fix, an unsuppressed date_field SQLStructuralDifference always
+    raised ValueError unconditionally (target_value required, never
+    provided by any real caller in src/reconciliation_assembly.py). Uses
+    Case 3's real, RAW (pre-decision-12-suppression) date_field structural
+    finding directly, the same "raw diff_sql output, independent of
+    downstream suppression" style already used for the filter ADD-direction
+    proof above."""
+    filter_difference = next(
+        d
+        for d in diff_sql(parse_sql(CASE_3_HYBRID_FALLBACK.source_a.sql), parse_sql(CASE_3_HYBRID_FALLBACK.source_b.sql))
+        if d.category == "date_field"
+    )
+    db = str(DATA_SAMPLE_DIR / "case_03_hybrid_fallback_a.duckdb")
+    mechanical = construct_corrected_query(CASE_3_HYBRID_FALLBACK.source_a.sql, filter_difference)
+    assert _execute_scalar(db, mechanical) == 1150.0
+
+
+def test_construct_corrected_query_date_field_category_still_raises_when_snippet_is_ambiguous():
+    """The extraction only succeeds for a single, unambiguous column --
+    src.sql_diff._diff_date_fields joins multiple columns per side with
+    '; ' when a side itself has more than one date column, which must
+    still raise rather than guess which one."""
+    difference = SQLStructuralDifference(
+        category="date_field",
         description="test",
-        query_a_snippet="a",
-        query_b_snippet="b",
+        query_a_snippet="order_date >= '2024-01-01'",
+        query_b_snippet="order_date >= '2024-01-01'; created_at >= '2024-01-01'",
     )
-    with pytest.raises(ValueError):
-        construct_corrected_query(CASE_2_MULTI_CAUSE.source_a.sql, unsupported)
+    with pytest.raises(ValueError, match="unambiguous date column"):
+        construct_corrected_query(CASE_3_HYBRID_FALLBACK.source_a.sql, difference)
+
+
+def test_construct_corrected_query_aggregation_category_defaults_from_query_b_snippet():
+    """Build 3, Day 2 cleanup, Part 1: the same target_value plumbing gap
+    for 'aggregation'. A real SUM-vs-COUNT structural mismatch (constructed
+    against Case 1's own orders table -- Case 1 itself declares identically
+    on both sides, so it never produces this finding for real; this proves
+    the mutation/extraction mechanics against real data, the same
+    "constructed, not from an existing fixture" style test_apply_distinct_
+    correction_matches_max_vs_count_distinct_over_fire_shape already uses)."""
+    db = str(DATA_SAMPLE_DIR / "case_01_join_type_a.duckdb")
+    source_a_sql = "SELECT SUM(amount) AS x FROM orders WHERE status NOT IN ('cancelled', 'refunded')"
+    source_b_sql = "SELECT COUNT(amount) AS x FROM orders WHERE status NOT IN ('cancelled', 'refunded')"
+    difference = next(
+        d for d in diff_sql(parse_sql(source_a_sql), parse_sql(source_b_sql)) if d.category == "aggregation"
+    )
+    mechanical = construct_corrected_query(source_a_sql, difference)
+    assert _execute_scalar(db, mechanical) == _execute_scalar(db, source_b_sql)
+
+
+def test_construct_corrected_query_aggregation_category_still_raises_when_snippet_unsupported():
+    """AVG (or any function outside sum/count) cannot be safely extracted
+    from a bare structural snippet -- raises rather than guessing, same
+    discipline as every other extraction helper in this module."""
+    difference = SQLStructuralDifference(
+        category="aggregation",
+        description="test",
+        query_a_snippet="SUM(amount)",
+        query_b_snippet="AVG(amount)",
+    )
+    with pytest.raises(ValueError, match="not one of"):
+        construct_corrected_query(CASE_1_JOIN_TYPE.source_a.sql, difference)
