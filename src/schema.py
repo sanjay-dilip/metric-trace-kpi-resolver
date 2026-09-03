@@ -112,9 +112,26 @@ class DataQualityIssue(BaseModel):
     DefinitionDifference/SQLStructuralDifference on the same fixture's
     overlapping rows is untested and explicitly out of scope for Build 2
     -- deferred to Build 3, mirroring decision 11's own stated scope
-    limit (docs/decisions.md)."""
+    limit (docs/decisions.md).
 
-    category: Literal["stale_extract", "missing_partition", "late_arriving_data", "referential_integrity"]
+    "no_date_filter" (Build 3, Day 2 cleanup, Part 1): a source's SQL does
+    not filter by date at all -- discovered when src/query_mutation.py's
+    apply_date_field_correction is asked to correct a date_field cause on
+    a side with zero date-like columns (DateFieldCorrectionMissing), which
+    src/reconciliation_assembly.py routes here as additive evidence rather
+    than a correction failure. Unlike every other category, this one has
+    NO computable dollar_impact -- there is no date column to construct a
+    corrected query from, so no execution can attribute a real number.
+    dollar_impact is 0.0 by convention for this category ONLY, and that
+    0.0 means "not computed," never "zero effect" -- the description text
+    always states this explicitly, so a reader (or a future explainer
+    prompt) does not misread it the way Cases 8-11's additive-only
+    dollar_impact could already be misread against unexplained_residual
+    (see this schema's own InvestigationEvidence docstring)."""
+
+    category: Literal[
+        "stale_extract", "missing_partition", "late_arriving_data", "referential_integrity", "no_date_filter"
+    ]
     source: Literal["a", "b"]
     description: str
     confidence: Literal["high", "medium", "low"]

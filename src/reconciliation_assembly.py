@@ -52,7 +52,7 @@ from typing import Callable
 from config import DATA_SAMPLE_DIR
 from src.data_quality import check_missing_partition, check_referential_integrity, check_stale_extract
 from src.definition_diff import diff_definitions
-from src.query_mutation import construct_corrected_query
+from src.query_mutation import DateFieldCorrectionMissing, construct_corrected_query
 from src.reconciliation import shapley_pair_attribution, single_cause_attribution
 from src.scenario import DashboardSource, Scenario
 from src.schema import (
@@ -89,7 +89,7 @@ def _describe(difference: _Difference) -> str:
 
 def _single_cause_line_item(
     source_a: DashboardSource, source_b: DashboardSource, seed_db_path_a: str, difference: _Difference
-) -> ReconciliationLineItem:
+) -> tuple[ReconciliationLineItem | None, DataQualityIssue | None]:
     """One non-interacting cause, corrected on source A toward source B's
     value (construct_corrected_query's default target), attributed via
     single_cause_attribution (src/reconciliation.py, Day 5 Task 2, reused
@@ -100,13 +100,59 @@ def _single_cause_line_item(
     DefinitionDifference correction can adopt source_b's real threshold, not
     just its column name (see construct_corrected_query's own docstring) --
     a no-op for every other difference type/field, which ignore
-    other_side_sql entirely."""
-    corrected_sql = construct_corrected_query(source_a.sql, difference, other_side_sql=source_b.sql)
+    other_side_sql entirely.
+
+    Return shape (Build 3, Day 2 cleanup, Part 1, new): a
+    (ReconciliationLineItem, None) pair on the normal path. When
+    correcting a `date_field` cause finds source A's SQL has ZERO
+    date-like columns at all (DateFieldCorrectionMissing,
+    src/query_mutation.py), this is NOT treated as a correction failure --
+    it returns (None, DataQualityIssue) instead, routing the finding as
+    additive data-quality evidence (category="no_date_filter",
+    src/schema.py) the same way Cases 8-11's dispatch-based checks already
+    are (assemble_investigation_evidence, below). dollar_impact on that
+    issue is 0.0 by convention, meaning NOT COMPUTED (there is no date
+    column to build a corrected query from) -- never "zero effect"; the
+    description states this explicitly so a reader cannot misread it,
+    matching this project's own "the caveat travels with the number"
+    discipline.
+
+    A genuinely AMBIGUOUS date_field cause (more than one date-like
+    column, DateFieldCorrectionAmbiguous) is deliberately NOT caught here
+    -- it propagates uncaught, matching this project's existing "raise
+    rather than guess" convention (the same shape as
+    assemble_investigation_evidence's own 3+-remaining-causes guard,
+    below) rather than being silently routed anywhere. See this project's
+    decision log for why a Shapley-pair member (_shapley_pair_line_items,
+    below) is deliberately NOT given this same catch -- out of scope for
+    this task, named explicitly rather than silently expanded into."""
+    try:
+        corrected_sql = construct_corrected_query(source_a.sql, difference, other_side_sql=source_b.sql)
+    except DateFieldCorrectionMissing:
+        issue = DataQualityIssue(
+            category="no_date_filter",
+            source="a",
+            description=(
+                f"source_a's SQL does not filter by date at all, so the "
+                f"date_field correction implied by this cause "
+                f"({_describe(difference)}) could not be constructed or "
+                "attributed a dollar figure. dollar_impact is 0.0 because it "
+                "is NOT COMPUTED -- this does not mean the cause has zero "
+                "effect."
+            ),
+            confidence="high",
+            dollar_impact=0.0,
+        )
+        return None, issue
+
     raw_delta = single_cause_attribution(seed_db_path_a, source_a.sql, corrected_sql)
-    return ReconciliationLineItem(
-        cause=_describe(difference),
-        dollar_impact=-raw_delta,
-        computed_by="single_cause_attribution",
+    return (
+        ReconciliationLineItem(
+            cause=_describe(difference),
+            dollar_impact=-raw_delta,
+            computed_by="single_cause_attribution",
+        ),
+        None,
     )
 
 
@@ -178,11 +224,24 @@ def assemble_reconciliation_line_items(
     definition_differences: list[DefinitionDifference],
     self_consistency_issues: list[SelfConsistencyIssue],
     interacting_pairs: list[tuple[_Difference, _Difference]] | None = None,
-) -> list[ReconciliationLineItem]:
+) -> tuple[list[ReconciliationLineItem], list[DataQualityIssue]]:
     """Assemble every dollar-attributed cause -- Shapley-averaged
     interacting pairs, self-consistency issues (with Part A's folded
     dollar impacts), and clean single-cause differences with no known
     interaction -- into a list[ReconciliationLineItem].
+
+    Return shape (Build 3, Day 2 cleanup, Part 1, changed from a bare
+    list[ReconciliationLineItem]): a (line_items, additional_data_quality_issues)
+    pair. The second element is normally empty -- it is populated only
+    when a single-cause date_field correction found source A's SQL has no
+    date-like column at all (_single_cause_line_item's own
+    DateFieldCorrectionMissing handling, above), routed as additive
+    data-quality evidence instead of a ReconciliationLineItem. Callers
+    (assemble_investigation_evidence, below) must fold this into
+    InvestigationEvidence.data_quality_issues alongside the
+    dispatch-table-sourced issues -- never into `reconciliation` or
+    unexplained_residual's arithmetic, matching this project's existing
+    additive-only convention for every other DataQualityIssue.
 
     `definition_differences` and `sql_differences` must already be the
     pruned/suppressed evidence (assemble_definitional_evidence's and
@@ -212,6 +271,7 @@ def assemble_reconciliation_line_items(
     paired_differences: list[_Difference] = [d for pair in interacting_pairs for d in pair]
 
     line_items: list[ReconciliationLineItem] = []
+    additional_data_quality_issues: list[DataQualityIssue] = []
 
     for difference_x, difference_y in interacting_pairs:
         line_items.extend(_shapley_pair_line_items(source_a, source_b, seed_db_path_a, difference_x, difference_y))
@@ -220,12 +280,16 @@ def assemble_reconciliation_line_items(
     for difference in all_cross_source_differences:
         if any(difference == paired for paired in paired_differences):
             continue
-        line_items.append(_single_cause_line_item(source_a, source_b, seed_db_path_a, difference))
+        line_item, data_quality_issue = _single_cause_line_item(source_a, source_b, seed_db_path_a, difference)
+        if line_item is not None:
+            line_items.append(line_item)
+        if data_quality_issue is not None:
+            additional_data_quality_issues.append(data_quality_issue)
 
     for issue in self_consistency_issues:
         line_items.append(_self_consistency_line_item(source_a, source_b, issue))
 
-    return line_items
+    return line_items, additional_data_quality_issues
 
 
 def _case_08_stale_extract(scenario: Scenario, seed_db_path_a: str, seed_db_path_b: str) -> DataQualityIssue | None:
@@ -480,7 +544,7 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
         )
     interacting_pairs = [(remaining_causes[0], remaining_causes[1])] if len(remaining_causes) == 2 else None
 
-    line_items = assemble_reconciliation_line_items(
+    line_items, correction_time_data_quality_issues = assemble_reconciliation_line_items(
         scenario.source_a,
         scenario.source_b,
         seed_db_path_a,
@@ -489,6 +553,12 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
         self_consistency_issues,
         interacting_pairs,
     )
+    # correction_time_data_quality_issues (Build 3, Day 2 cleanup, Part 1):
+    # discovered while attempting a date_field correction (a source with no
+    # date-like column at all), not via _DATA_QUALITY_DISPATCH's own lookup
+    # table -- merged in here, additive-only, exactly like the dispatch-based
+    # issues above (assemble_reconciliation_line_items's own docstring).
+    data_quality_issues = data_quality_issues + correction_time_data_quality_issues
 
     total_dollar_impact = sum(item.dollar_impact for item in line_items)
     unexplained_residual = scenario.known_gap - total_dollar_impact
