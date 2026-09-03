@@ -346,7 +346,7 @@ def test_raises_on_more_than_two_remaining_causes():
 # every other ambiguous scenario in this project uses.
 
 
-def test_case_13_full_pipeline_now_raises_on_filter_alone_after_suppression():
+def test_case_13_full_pipeline_now_reconciles_the_filter_removal():
     """Build 3, Day 1, Part 6: proves the filter/excluded_statuses
     suppression rule (assemble_structural_and_definitional_evidence,
     src/self_consistency.py) actually reaches assemble_investigation_evidence,
@@ -358,23 +358,26 @@ def test_case_13_full_pipeline_now_raises_on_filter_alone_after_suppression():
     6's suppression, only `filter` survives -- exactly 1 remaining cause,
     routed through the single-cause branch instead.
 
-    Build 3, Day 2, Part 13 update: apply_filter_correction now exists,
-    but ADD-direction only (a side missing the filter gets it added from
-    the other side's real predicate) -- CASE_13's source_a is the side
-    WITH the filter (`status NOT IN ('churned')`), source_b has none, so
-    correcting source_a toward source_b's value means REMOVING an
-    existing predicate, the reverse direction apply_filter_correction
-    explicitly does not support (a separate, still-unlocked design
-    question -- does "correct toward no filter" mean dropping the
-    predicate entirely, mirroring apply_excluded_statuses_correction's
-    own zero-exclusion convention, or something else?). The raise message
-    changed from construct_corrected_query's old blanket "no rule exists
-    for category 'filter'" to apply_filter_correction's own, more
-    specific "target does not name a real filter predicate to add"
-    message -- CASE_13 still raises, still not resolved, still
-    deliberately NOT added to SCENARIOS."""
-    with pytest.raises(ValueError, match="does not name a real filter predicate to add"):
-        assemble_investigation_evidence(CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION)
+    Build 3, Day 2, Part 13 built apply_filter_correction's ADD direction
+    only -- CASE_13's source_a is the side WITH the filter
+    (`status NOT IN ('churned')`), source_b has none, so correcting
+    source_a toward source_b's value means REMOVING an existing predicate,
+    which crashed through Build 3, Day 2, Part 15. Build 3, Day 2 cleanup,
+    Part 1 built the REMOVE direction (apply_filter_removal,
+    src/query_mutation.py) -- CASE_13 now reconciles CLEANLY end to end,
+    reaching an exact 0.0 unexplained_residual (both sides share
+    identical underlying orders data per the fixture's own docstring, so
+    removing source_a's extraneous exclusion reproduces source_b's real
+    value exactly) instead of raising. Still deliberately NOT added to
+    SCENARIOS -- this fixture's job is proving the collision/suppression
+    machinery on freshly built data, not benchmark participation."""
+    evidence = assemble_investigation_evidence(CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION)
+
+    assert evidence.definition_differences == []
+    assert [d.category for d in evidence.sql_differences] == ["filter"]
+    assert len(evidence.reconciliation) == 1
+    assert evidence.reconciliation[0].dollar_impact == -150.0
+    assert evidence.unexplained_residual == 0.0
 
 
 def test_case_14_full_pipeline_completes_with_a_real_but_large_residual():
