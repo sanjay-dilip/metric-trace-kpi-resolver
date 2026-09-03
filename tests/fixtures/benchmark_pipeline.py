@@ -40,6 +40,7 @@ from src.reconciliation_assembly import (
     assemble_investigation_evidence,
 )
 from src.schema import (
+    CorrectionEscalation,
     DataQualityIssue,
     DefinitionDifference,
     InvestigationEvidence,
@@ -77,12 +78,20 @@ class PartialInvestigationEvidence(BaseModel):
     type matches InvestigationEvidence exactly except reconciliation
     (defaults to [], since it is never computed on this path) and
     unexplained_residual (float | None, defaults to None -- None states
-    honestly that no residual was computed, never a fabricated 0.0)."""
+    honestly that no residual was computed, never a fabricated 0.0).
+
+    escalations (Build 3, Day 2 cleanup, Part 2): added for the same
+    exact-field-match reason as every other field here -- InvestigationEvidence
+    gained this field in decision 40's own verification pass, and this
+    type's own docstring commits to mirroring it. Defaults to [] so
+    existing PartialInvestigationEvidence(...) constructions that predate
+    this field are unaffected."""
 
     definition_differences: list[DefinitionDifference]
     self_consistency_issues: list[SelfConsistencyIssue]
     sql_differences: list[SQLStructuralDifference]
     data_quality_issues: list[DataQualityIssue]
+    escalations: list[CorrectionEscalation] = []
     reconciliation: list[ReconciliationLineItem] = []
     unexplained_residual: float | None = None
 
@@ -141,8 +150,10 @@ def assemble_investigation_evidence_for_benchmark(
 
     data_quality_issues = _resolve_data_quality_issues(scenario, seed_db_path_a, seed_db_path_b)
     sql_differences = diff_sql(parse_sql(scenario.source_a.sql), parse_sql(scenario.source_b.sql))
-    definition_differences, self_consistency_issues = assemble_definitional_evidence_with_dollar_impacts(
-        scenario.source_a, scenario.source_b, seed_db_path_a, seed_db_path_b
+    definition_differences, self_consistency_issues, escalations = (
+        assemble_definitional_evidence_with_dollar_impacts(
+            scenario.source_a, scenario.source_b, seed_db_path_a, seed_db_path_b
+        )
     )
     sql_differences, definition_differences = assemble_structural_and_definitional_evidence(
         sql_differences, definition_differences
@@ -153,4 +164,5 @@ def assemble_investigation_evidence_for_benchmark(
         self_consistency_issues=self_consistency_issues,
         sql_differences=sql_differences,
         data_quality_issues=data_quality_issues,
+        escalations=escalations,
     )

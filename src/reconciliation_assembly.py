@@ -600,8 +600,10 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
     data_quality_issues = _resolve_data_quality_issues(scenario, seed_db_path_a, seed_db_path_b)
 
     sql_differences = diff_sql(parse_sql(scenario.source_a.sql), parse_sql(scenario.source_b.sql))
-    definition_differences, self_consistency_issues = assemble_definitional_evidence_with_dollar_impacts(
-        scenario.source_a, scenario.source_b, seed_db_path_a, seed_db_path_b
+    definition_differences, self_consistency_issues, self_consistency_escalations = (
+        assemble_definitional_evidence_with_dollar_impacts(
+            scenario.source_a, scenario.source_b, seed_db_path_a, seed_db_path_b
+        )
     )
     sql_differences, definition_differences = assemble_structural_and_definitional_evidence(
         sql_differences, definition_differences
@@ -637,7 +639,12 @@ def assemble_investigation_evidence(scenario: Scenario) -> InvestigationEvidence
     # date-like columns) -- also additive-only, threaded through as its own
     # field rather than folded into data_quality_issues (see
     # CorrectionEscalation's own docstring, src/schema.py, for why).
+    # self_consistency_escalations (Build 3, Day 2 cleanup, Part 2): the
+    # same crash shape, closed at self_consistency.py's own
+    # construct_corrected_query call site -- merged in here alongside the
+    # reconciliation-time escalations above, same additive-only treatment.
     data_quality_issues = data_quality_issues + correction_time_data_quality_issues
+    escalations = escalations + self_consistency_escalations
 
     total_dollar_impact = sum(item.dollar_impact for item in line_items)
     unexplained_residual = scenario.known_gap - total_dollar_impact
