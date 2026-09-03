@@ -25,7 +25,7 @@ from config import DATA_SAMPLE_DIR
 from src.definition_diff import diff_definitions
 from src.reconciliation_assembly import assemble_reconciliation_line_items
 from src.scenario import DashboardSource
-from src.schema import DefinitionDifference
+from src.schema import DefinitionDifference, SQLStructuralDifference
 from src.self_consistency import (
     assemble_definitional_evidence_with_dollar_impacts,
     assemble_structural_and_definitional_evidence,
@@ -319,3 +319,40 @@ def test_single_cause_line_item_routes_ambiguous_date_columns_as_escalation():
     escalation = escalations[0]
     assert "ambiguous" in escalation.reason
     assert "created_at" in escalation.reason and "order_date" in escalation.reason
+
+
+def test_single_cause_line_item_routes_unsupported_category_as_escalation():
+    """Follow-up to decision 40's verification pass, applying the same
+    catch-and-escalate fix to UnsupportedCorrectionCategory (grouping/other
+    -- src/query_mutation.py's own confirmed-no-mutation-rule categories)
+    that the verification pass already applied to DateFieldCorrectionAmbiguous.
+
+    Uses a real, constructed `grouping` SQLStructuralDifference (a
+    per-customer breakdown vs. a company-total query -- the same
+    fixture decision 40's own verification pass used to prove `grouping`
+    is a real, reachable finding, reused here against case_01's own
+    seed data) -- before this fix, this would have raised
+    UnsupportedCorrectionCategory uncaught through
+    assemble_reconciliation_line_items. Now completes normally with a
+    CorrectionEscalation, the same additive-evidence shape as the
+    date_field-ambiguous case."""
+    db_a = str(DATA_SAMPLE_DIR / "case_01_join_type_a.duckdb")
+    source_a = DashboardSource(
+        label="a", sql="SELECT customer_id, SUM(amount) AS revenue FROM orders GROUP BY customer_id", declared_definition=None
+    )
+    source_b = DashboardSource(label="b", sql="SELECT SUM(amount) AS revenue FROM orders", declared_definition=None)
+    difference = SQLStructuralDifference(
+        category="grouping",
+        description="source_a groups by ['customer_id'], source_b groups by (no GROUP BY)",
+        query_a_snippet="customer_id",
+        query_b_snippet="(no GROUP BY)",
+    )
+
+    items, data_quality_issues, escalations = assemble_reconciliation_line_items(source_a, source_b, db_a, [difference], [], [])
+
+    assert items == []
+    assert data_quality_issues == []
+    assert len(escalations) == 1
+    escalation = escalations[0]
+    assert "no automatic correction rule exists" in escalation.reason
+    assert "grouping" in escalation.reason

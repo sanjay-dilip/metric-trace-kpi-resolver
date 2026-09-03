@@ -640,3 +640,51 @@ def test_ambiguous_date_columns_reaches_full_pipeline_as_a_completed_escalation(
     # finding this construction produces, not evidence the escalation failed.
     assert len(evidence.reconciliation) == 1
     assert evidence.reconciliation[0].computed_by == "self_consistency_correction"
+
+
+def test_grouping_mismatch_reaches_full_pipeline_as_a_completed_escalation():
+    """Follow-up to decision 40's verification pass: applies the same
+    catch-and-escalate fix now built for UnsupportedCorrectionCategory
+    (src/reconciliation_assembly.py's _single_cause_line_item) and proves
+    it via the REAL full assemble_investigation_evidence pipeline, the
+    same standard used for the date_field-ambiguous fix.
+
+    Reuses the exact real fixture decision 40's verification pass
+    constructed to prove `grouping` is a reachable, plausible finding (a
+    per-customer breakdown dashboard vs. a company-total dashboard) --
+    before this fix, this crashed with an uncaught
+    UnsupportedCorrectionCategory, identical in shape to the
+    DateFieldCorrectionAmbiguous crash decision 40's verification pass
+    already fixed. Confirmed fixed here: the call completes normally and
+    the grouping mismatch is visible as a real CorrectionEscalation."""
+    declared = DeclaredDefinition(date_field="order_date", excluded_statuses=[], aggregation="sum")
+    source_a = DashboardSource(
+        label="dashboard_a",
+        sql="SELECT customer_id, SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01' GROUP BY customer_id",
+        declared_definition=declared,
+    )
+    source_b = DashboardSource(
+        label="finance_query",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01'",
+        declared_definition=declared,
+    )
+    scenario = Scenario(
+        scenario_id="scratch_grouping_full_pipeline",
+        description="Proof fixture: source_a groups by customer_id, source_b reports a flat total.",
+        source_a=source_a,
+        source_b=source_b,
+        reported_value_a=0.0,
+        reported_value_b=800.0,
+        known_gap=0.0 - 800.0,
+        seed_table="case_01_join_type",
+    )
+
+    evidence = assemble_investigation_evidence(scenario)
+
+    assert [d.category for d in evidence.sql_differences] == ["grouping"]
+    assert len(evidence.escalations) == 1
+    escalation = evidence.escalations[0]
+    assert "no automatic correction rule exists" in escalation.reason
+    assert evidence.data_quality_issues == []
+    assert evidence.reconciliation == []
+    assert evidence.unexplained_residual == scenario.known_gap

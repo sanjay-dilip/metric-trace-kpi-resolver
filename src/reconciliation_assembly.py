@@ -52,7 +52,12 @@ from typing import Callable
 from config import DATA_SAMPLE_DIR
 from src.data_quality import check_missing_partition, check_referential_integrity, check_stale_extract
 from src.definition_diff import diff_definitions
-from src.query_mutation import DateFieldCorrectionAmbiguous, DateFieldCorrectionMissing, construct_corrected_query
+from src.query_mutation import (
+    DateFieldCorrectionAmbiguous,
+    DateFieldCorrectionMissing,
+    UnsupportedCorrectionCategory,
+    construct_corrected_query,
+)
 from src.reconciliation import shapley_pair_attribution, single_cause_attribution
 from src.scenario import DashboardSource, Scenario
 from src.schema import (
@@ -143,12 +148,40 @@ def _single_cause_line_item(
     additive evidence like DataQualityIssue, not participating in
     reconciliation or unexplained_residual.
 
+    When `difference` is a `grouping` or `other` SQLStructuralDifference
+    (or any other category with no mutation rule at all --
+    UnsupportedCorrectionCategory, src/query_mutation.py), this ALSO
+    returns (None, None, CorrectionEscalation) rather than propagating
+    the exception -- the same fix, and the same reasoning, decision 40's
+    verification pass already applied to DateFieldCorrectionAmbiguous:
+    that pass found and named this exact gap live (a real, constructed
+    `grouping` fixture -- a per-customer breakdown dashboard vs. a
+    company-total dashboard -- aborted assemble_investigation_evidence
+    entirely, identical to the date_field crash), but deliberately left
+    it unfixed at the time because reframing the `grouping` evidentiary
+    claim was that task's own stated scope, not building new correction
+    or escalation surface. Closed here, on request, as the direct
+    follow-up: a category with NO mutation rule at all is exactly as
+    "needs a human, don't guess" as an AMBIGUOUS one -- both are cases
+    this deterministic core cannot safely resolve on its own, and both
+    now produce the same typed, additive result instead of a crash.
+
     See this project's decision log for why a Shapley-pair member
     (_shapley_pair_line_items, below) is deliberately NOT given this same
     catch -- out of scope for this task, named explicitly rather than
     silently expanded into."""
     try:
         corrected_sql = construct_corrected_query(source_a.sql, difference, other_side_sql=source_b.sql)
+    except UnsupportedCorrectionCategory as exc:
+        escalation = CorrectionEscalation(
+            cause=_describe(difference),
+            reason=(
+                f"no automatic correction rule exists for this category, so "
+                f"it could not be attributed a dollar figure -- not guessed "
+                f"at: {exc}"
+            ),
+        )
+        return None, None, escalation
     except DateFieldCorrectionMissing:
         issue = DataQualityIssue(
             category="no_date_filter",
