@@ -14,17 +14,48 @@ difference category/field this project's schema (src/schema.py) already
 knows about:
 
     covered:     date_field, excluded_statuses, aggregation, join_type,
-                 filter (Build 3, Day 2, Part 13 -- ADD direction only,
-                 see apply_filter_correction's own docstring for the
-                 REMOVE direction this does not cover)
-    NOT covered: distinct, grouping, other
+                 distinct (Build 3, Day 2 cleanup, Part 1 -- see below),
+                 filter (Build 3, Day 2, Part 13 for the ADD direction;
+                 Build 3, Day 2 cleanup, Part 1 for the REMOVE direction --
+                 see apply_filter_correction's own docstring)
+    NOT covered: grouping, other
                  (SQLStructuralDifference categories with no mutation rule --
                  see construct_corrected_query's docstring for why)
 
-A category with no mutation rule raises ValueError rather than silently
-passing the SQL through unmodified or guessing at a correction -- a gap in
-coverage must be visible immediately, not produce a wrong corrected-query
-result downstream.
+A category with no mutation rule raises UnsupportedCorrectionCategory
+(NotImplementedError) rather than silently passing the SQL through
+unmodified or guessing at a correction -- a gap in coverage must be visible
+immediately, not produce a wrong corrected-query result downstream.
+NotImplementedError, not ValueError, is deliberate: every OTHER raise in
+this module signals "this input is ambiguous, I could support this
+category but won't guess which one" (a supported category given bad/
+ambiguous input); grouping/other signal a categorically different fact --
+"no mutation rule exists for this category at all," independent of the
+input. A caller can distinguish the two failure modes by type.
+
+Build 3, Day 2 cleanup, Part 1 investigated all three previously-uncovered
+categories (distinct, grouping, other) against this project's own real
+scenario shapes before deciding which got full logic vs. a fallback --
+see docs/decisions.md for the full reasoning. Summary:
+
+  - `distinct` IS reachable with a real, already-proven fixture (below) --
+    given full correction logic (apply_distinct_correction).
+  - `grouping` is NOT reachable in a realistic shape for this project:
+    every reconciliation primitive in src/reconciliation.py
+    (single_cause_attribution, shapley_pair_attribution,
+    freshness_attribution) reads its result via `fetchone()[0]` -- a
+    SINGLE scalar row. A query with a GROUP BY returns multiple rows;
+    reconciling a GROUP BY-differing pair would silently read only an
+    arbitrary first group's value, not a real number, corrupting every
+    downstream sum. This is not a gap in this module alone -- it is
+    architecturally incompatible with this project's whole scalar-KPI
+    reconciliation model, and no currently-committed scenario uses GROUP
+    BY at all. Left as a fallback, not built on spec.
+  - `other` is NOT reachable at all: confirmed by direct inspection,
+    src/sql_diff.py's diff_sql() never constructs a
+    SQLStructuralDifference with category="other" anywhere -- it is a
+    schema-level placeholder (src/schema.py's Literal enum) with zero
+    producers. Left as a fallback, not built on spec.
 
 Note on `distinct` specifically: decision 10 (docs/decisions.md) suppresses
 a `distinct` SQLStructuralDifference in favor of the corresponding
@@ -36,12 +67,8 @@ over-fire test (tests/test_structural_definitional_precedence.py::
 test_does_not_over_fire_on_unrelated_distinct_and_aggregation_findings)
 proves a genuinely different-function case (COUNT(DISTINCT customer_id) vs
 MAX(customer_id)) is NOT suppressed and does reach downstream evidence with
-its `distinct` category intact. Confirmed live: feeding that exact
-SQLStructuralDifference into construct_corrected_query raises the expected
-ValueError, not a silent mishandling. `distinct` staying on the uncovered
-list is therefore still the correct call, but not for the reason "decision
-10 already filters it out before it gets here" -- that reasoning only holds
-for the same-fact case.
+its `distinct` category intact -- this is the real, reachable shape
+apply_distinct_correction (below) is built and proven against.
 
 Uses sqlglot for the actual mutation (parse, modify the relevant AST node,
 regenerate SQL), the same reliability reasons src/sql_parser.py and
@@ -62,13 +89,51 @@ _SUPPORTED_JOIN_TARGETS = ("INNER", "LEFT", "RIGHT", "FULL")
 _SUPPORTED_AGGREGATION_TARGETS = ("sum", "count", "count_distinct")
 
 
+class UnsupportedCorrectionCategory(NotImplementedError):
+    """Raised by construct_corrected_query for a SQLStructuralDifference
+    category with no mutation rule at all (grouping, other -- see this
+    module's docstring for why each is left uncovered). Distinct from
+    ValueError, which this module reserves for a SUPPORTED category given
+    genuinely ambiguous input (Build 3, Day 2 cleanup, Part 1) -- a caller
+    can tell "not handled yet" apart from "handled, but this input needs a
+    human" by exception type alone."""
+
+
+class DateFieldCorrectionMissing(ValueError):
+    """Raised by apply_date_field_correction when the side being corrected
+    has ZERO date-like columns -- the query never filters by date at all.
+    Build 3, Day 2 cleanup, Part 1: this is a data-completeness fact, not a
+    "which column" ambiguity (DateFieldCorrectionAmbiguous, below) -- a
+    caller should route it as additive data-quality evidence
+    (src/reconciliation_assembly.py), not treat it as a correction
+    failure. Subclasses ValueError so any caller that has not been updated
+    to catch this specific type still catches it via the pre-existing
+    ValueError handling."""
+
+
+class DateFieldCorrectionAmbiguous(ValueError):
+    """Raised by apply_date_field_correction when the side being corrected
+    has MORE THAN ONE date-like column -- which one to correct is
+    genuinely ambiguous. Build 3, Day 2 cleanup, Part 1: a caller should
+    escalate rather than guess (this project's standing discipline --
+    decisions 10, 12, 18, 22, 26 never suppress or pick a side without
+    proof), the same way assemble_investigation_evidence already refuses
+    to guess which sub-pairs interact at 3+ remaining causes. Subclasses
+    ValueError for the same backward-compatibility reason as
+    DateFieldCorrectionMissing."""
+
+
 def apply_date_field_correction(sql: str, target_field: str, target_predicate: str | None = None) -> str:
     """Swap the date column used in date-based filtering to `target_field`.
 
     Requires exactly one existing date-like column in `sql` (per
-    src.sql_parser's date-column heuristic) -- if zero or more than one is
-    found, which column to correct is ambiguous, so this raises rather than
-    guessing.
+    src.sql_parser's date-column heuristic). Build 3, Day 2 cleanup, Part
+    1: zero and multiple are now two DISTINCT, clearly-typed failure
+    modes, not one generic ValueError -- zero (DateFieldCorrectionMissing)
+    means the query never filters by date at all, a data-completeness
+    fact; multiple (DateFieldCorrectionAmbiguous) means which column to
+    correct is genuinely ambiguous. Neither is guessed at; a caller
+    decides what to do with each (src/reconciliation_assembly.py).
 
     `target_predicate` (Build 3, Day 3, Part 2 -- fixes a real, previously-
     undiscovered gap, see the module-level note below): when given, the
@@ -86,10 +151,16 @@ def apply_date_field_correction(sql: str, target_field: str, target_predicate: s
     """
     parsed = parse_sql(sql)
     existing_bare = sorted({_bare_column(column) for column in parsed.date_columns})
-    if len(existing_bare) != 1:
-        raise ValueError(
-            f"apply_date_field_correction requires exactly one existing date "
-            f"column to correct; found {existing_bare or '(none)'} in the given SQL."
+    if not existing_bare:
+        raise DateFieldCorrectionMissing(
+            "apply_date_field_correction found no date-like column in the given "
+            "SQL -- this query does not filter by date at all."
+        )
+    if len(existing_bare) > 1:
+        raise DateFieldCorrectionAmbiguous(
+            f"apply_date_field_correction found {len(existing_bare)} date-like "
+            f"columns ({existing_bare}) in the given SQL -- which one to correct "
+            "is ambiguous."
         )
     current_bare = existing_bare[0]
 
@@ -335,7 +406,58 @@ def _bare_predicate_column(condition_sql: str) -> str | None:
     return next(iter(columns))
 
 
-def apply_filter_correction(sql: str, other_side_filter_condition: str) -> str:
+def apply_filter_removal(sql: str, own_filter_condition: str) -> str:
+    """Strip the predicate referencing `own_filter_condition`'s column
+    entirely from `sql`'s WHERE clause (Build 3, Day 2 cleanup, Part 1 --
+    the REMOVE direction apply_filter_correction's own docstring left
+    unbuilt after Build 3, Day 2, Part 13's ADD direction). `sql` is the
+    side WITH the extraneous predicate (a SQLStructuralDifference('filter')
+    finding's OWN snippet on this side, e.g.
+    CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION's source_a) -- correcting
+    toward the other side's real value (no filter at all) means removing
+    the clause entirely, mirroring apply_excluded_statuses_correction's own
+    "empty target = remove the clause" convention (Build 3, Day 1, Part 5)
+    rather than a vacuous always-true predicate.
+
+    `own_filter_condition` is `sql`'s OWN predicate text (e.g. the
+    SQLStructuralDifference's query_a_snippet when `sql` is source A) --
+    used only to identify which column's predicate to remove; the removal
+    itself walks `sql`'s live AST via _remove_predicate (already generic,
+    not status-specific, shared with apply_excluded_statuses_correction),
+    not string-matched against the passed-in text.
+
+    Requires exactly one predicate in `sql` referencing that column --
+    same "raise rather than guess" discipline as every other mutation
+    function in this module.
+    """
+    target_column = _bare_predicate_column(own_filter_condition)
+    if target_column is None:
+        raise ValueError(
+            "apply_filter_removal received a condition that does not name a real "
+            f"filter predicate to remove ('{own_filter_condition}')."
+        )
+
+    tree = sqlglot.parse_one(sql)
+    where = tree.find(exp.Where)
+    leaves = (
+        [
+            leaf
+            for leaf in _split_and_condition_nodes(where.this)
+            if any(_bare_column(column.sql()) == target_column for column in leaf.find_all(exp.Column))
+        ]
+        if where is not None
+        else []
+    )
+    if len(leaves) != 1:
+        raise ValueError(
+            f"apply_filter_removal requires exactly one predicate referencing "
+            f"column '{target_column}' in `sql`; found {len(leaves)}."
+        )
+    _remove_predicate(where, leaves[0])
+    return tree.sql()
+
+
+def apply_filter_correction(sql: str, other_side_filter_condition: str, own_filter_condition: str | None = None) -> str:
     """Add a filter predicate to `sql`'s WHERE clause, sourced from
     `other_side_filter_condition` -- the OTHER side's actual filter text on
     the same column (a SQLStructuralDifference('filter') finding's
@@ -348,39 +470,48 @@ def apply_filter_correction(sql: str, other_side_filter_condition: str) -> str:
     findings carry no target value of their own -- Build 3, Day 2, Part 13,
     locked design decision).
 
-    Scope, locked: only the ADD direction is supported -- correcting a
-    side that is missing a filter, toward the other side's real predicate.
-    Raises clearly, not silently, for the two shapes this does not cover:
+    Two directions are supported (Build 3, Day 2 cleanup, Part 1 added the
+    second):
 
-      - `other_side_filter_condition` is itself the "(no filter on this
-        column)" placeholder -- meaning `sql` is actually the side WITH
-        the filter (e.g. CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION's
-        source_a) and the correction needed is REMOVAL, the reverse
-        direction. That is a separate, unlocked design decision (does
-        "correcting toward no filter" mean dropping the predicate
-        entirely, mirroring apply_excluded_statuses_correction's own
-        zero-exclusion convention from Part 5, or something else?) --
-        not decided or built here.
-      - `sql` already has its own predicate on the same column as
-        `other_side_filter_condition` -- would mean both sides have
-        differing predicates on this column, a shape src.sql_diff's
-        presence-only `_diff_filters` should never produce as a `filter`
-        finding in the first place (it only flags a column filtered on
-        one side and absent on the other); raising rather than silently
-        overwriting or double-adding a predicate.
+      - ADD (Build 3, Day 2, Part 13, unchanged): `other_side_filter_condition`
+        names a real predicate -- `sql` is the side MISSING it, added via
+        sqlglot's own `.where()` builder (AND-appends to an existing WHERE
+        clause, or creates one from scratch if `sql` has none at all).
+      - REMOVE (Build 3, Day 2 cleanup, Part 1, new): `other_side_filter_condition`
+        is the "(no filter on this column)" placeholder -- `sql` is
+        actually the side WITH the filter (e.g.
+        CASE_13_FILTER_EXCLUDED_STATUSES_COLLISION's source_a) and the
+        correction needed is REMOVAL. `own_filter_condition` (`sql`'s own
+        predicate text, e.g. the same finding's query_a_snippet) is
+        REQUIRED in this branch -- the placeholder alone carries no column
+        identity to remove -- and this delegates to apply_filter_removal
+        (above) for the actual mechanics. Raises clearly if
+        `own_filter_condition` is missing rather than guessing which
+        column `sql` might need stripped.
 
-    Uses sqlglot's own `.where()` builder (AND-appends to an existing
-    WHERE clause, or creates one from scratch if `sql` has none at all --
-    verified directly, not assumed, since every prior mutation function in
-    this module only ever rewrites an EXISTING predicate and none needed
-    to handle the zero-WHERE-clause case before this one).
+    Raises clearly, not silently, for the shape neither direction covers:
+    `sql` already has its own predicate on the same column as
+    `other_side_filter_condition` -- would mean both sides have differing
+    predicates on this column, a shape src.sql_diff's presence-only
+    `_diff_filters` should never produce as a `filter` finding in the first
+    place (it only flags a column filtered on one side and absent on the
+    other); raising rather than silently overwriting or double-adding a
+    predicate.
     """
+    if other_side_filter_condition.strip() == _NO_FILTER_SNIPPET_PLACEHOLDER:
+        if own_filter_condition is None:
+            raise ValueError(
+                "apply_filter_correction received the '(no filter on this column)' "
+                "placeholder (a REMOVE-direction correction) but no "
+                "own_filter_condition to identify which predicate to remove."
+            )
+        return apply_filter_removal(sql, own_filter_condition)
+
     target_column = _bare_predicate_column(other_side_filter_condition)
-    if other_side_filter_condition.strip() == _NO_FILTER_SNIPPET_PLACEHOLDER or target_column is None:
+    if target_column is None:
         raise ValueError(
             "apply_filter_correction received a target that does not name a real "
-            f"filter predicate to add ('{other_side_filter_condition}'); removing an "
-            "existing filter (the reverse direction) is not supported."
+            f"filter predicate to add ('{other_side_filter_condition}')."
         )
 
     tree = sqlglot.parse_one(sql)
@@ -395,6 +526,45 @@ def apply_filter_correction(sql: str, other_side_filter_condition: str) -> str:
             )
 
     return tree.where(other_side_filter_condition).sql()
+
+
+def apply_distinct_correction(sql: str, target_has_distinct: bool) -> str:
+    """Toggle DISTINCT on `sql`'s sole aggregate call to match
+    `target_has_distinct` (Build 3, Day 2 cleanup, Part 1 -- the `distinct`
+    SQLStructuralDifference category, confirmed reachable in a real,
+    already-proven fixture: COUNT(DISTINCT customer_id) vs MAX(customer_id),
+    tests/test_structural_definitional_precedence.py::
+    test_does_not_over_fire_on_unrelated_distinct_and_aggregation_findings --
+    decision 10's suppression does not fire here since 'max' is a genuinely
+    different function, not the same fact under a DISTINCT toggle, so
+    `distinct` survives to reach this function for real).
+
+    Requires exactly one aggregate call in `sql` -- same "raise rather than
+    guess" discipline as apply_aggregation_correction, which this function
+    otherwise mirrors closely: only the DISTINCT wrapping changes, the
+    aggregate function and its column/expression are preserved exactly.
+    Toggling DISTINCT on a function where it is not meaningful (e.g. MAX,
+    already the target of this module's own reachable-collision proof) is
+    a legal SQL no-op, not an error -- sqlglot round-trips it faithfully
+    and DuckDB accepts it, so this function does not special-case which
+    function it is wrapping.
+    """
+    tree = sqlglot.parse_one(sql)
+    agg_nodes = list(tree.find_all(exp.AggFunc))
+    if len(agg_nodes) != 1:
+        raise ValueError(
+            f"apply_distinct_correction requires exactly one aggregate call; "
+            f"found {len(agg_nodes)} in the given SQL."
+        )
+    agg_node = agg_nodes[0]
+    inner = agg_node.this
+    column_expr = inner.expressions[0] if isinstance(inner, exp.Distinct) else inner
+
+    if target_has_distinct:
+        agg_node.set("this", exp.Distinct(expressions=[column_expr]))
+    else:
+        agg_node.set("this", column_expr)
+    return tree.sql()
 
 
 def apply_aggregation_correction(sql: str, target_aggregation: str) -> str:
@@ -490,6 +660,65 @@ def _extract_join_target_from_snippet(snippet: str) -> str:
     return token.upper()
 
 
+def _extract_date_field_target_from_snippet(snippet: str) -> str:
+    """Extract a single bare date column name from a SQLStructuralDifference
+    date_field snippet (Build 3, Day 2 cleanup, Part 1 -- the target_value
+    plumbing gap), mirroring _extract_join_target_from_snippet's "adopt B's
+    value" default. src.sql_diff._diff_date_fields joins multiple columns
+    per side with '; ' when a side itself has more than one date column
+    (its own ambiguous case) and uses the literal '(no date filter)'
+    placeholder when a side has none -- neither shape names a single,
+    unambiguous target, so both raise rather than guess, the same
+    discipline as every other snippet extractor in this module."""
+    try:
+        condition = sqlglot.condition(snippet)
+    except Exception as exc:
+        raise ValueError(f"could not parse a date column from snippet '{snippet}'.") from exc
+    columns = {_bare_column(column.sql()) for column in condition.find_all(exp.Column)}
+    if len(columns) != 1:
+        raise ValueError(
+            f"could not extract a single unambiguous date column from snippet "
+            f"'{snippet}' (found {sorted(columns) or 'none'})."
+        )
+    return next(iter(columns))
+
+
+_STRUCTURAL_AGGREGATION_TARGETS = {"SUM": "sum", "COUNT": "count"}
+"""SQLStructuralDifference's aggregation snippet (src.sql_diff._diff_aggregations)
+carries only the bare SQL function name -- DISTINCT is tracked separately
+at the query level (src/sql_parser.py's AggregationCall docstring) and
+never folded in, so a structural snippet alone can never distinguish
+COUNT from COUNT DISTINCT. Extraction is therefore limited to the two
+functions a bare name maps to unambiguously; anything else (including a
+genuinely DISTINCT target this extraction cannot see) raises rather than
+silently producing a non-DISTINCT correction that might be wrong."""
+
+
+def _extract_aggregation_target_from_snippet(snippet: str) -> str:
+    """Extract a target_aggregation value from a SQLStructuralDifference
+    aggregation snippet (Build 3, Day 2 cleanup, Part 1), e.g. 'SUM(amount)'
+    -> 'sum'. Only succeeds for a snippet that parses to exactly one
+    AggFunc call with a function in _STRUCTURAL_AGGREGATION_TARGETS --
+    src.sql_diff's own "differing NUMBER of calls" branch produces a
+    comma-joined list or the literal '(none)', neither of which parses to
+    a single AggFunc, so that shape correctly raises here too rather than
+    guessing which call matters."""
+    try:
+        tree = sqlglot.parse_one(snippet)
+    except Exception as exc:
+        raise ValueError(f"could not parse an aggregate function from snippet '{snippet}'.") from exc
+    if not isinstance(tree, exp.AggFunc):
+        raise ValueError(f"snippet '{snippet}' does not parse to a single aggregate function call.")
+    function = type(tree).__name__.upper()
+    if function not in _STRUCTURAL_AGGREGATION_TARGETS:
+        raise ValueError(
+            f"could not extract a supported aggregation target from snippet "
+            f"'{snippet}' (function '{function}' is not one of "
+            f"{sorted(_STRUCTURAL_AGGREGATION_TARGETS)})."
+        )
+    return _STRUCTURAL_AGGREGATION_TARGETS[function]
+
+
 def _dispatch_field(original_sql: str, field: str, target: str) -> str:
     """Route a resolved (field, target) pair to the matching mutation
     function. Shared by DefinitionDifference/SelfConsistencyIssue routing
@@ -530,20 +759,41 @@ def construct_corrected_query(
       - SQLStructuralDifference, category "join_type": defaults to a value
         extracted from `difference.query_b_snippet` (same "adopt B's value"
         convention as DefinitionDifference).
-      - SQLStructuralDifference, category "date_field" or "aggregation":
+      - SQLStructuralDifference, category "date_field" or "aggregation"
+        (Build 3, Day 2 cleanup, Part 1 -- the target_value plumbing gap):
         no structured target value exists on this schema (only descriptive
-        text) -- target_value MUST be passed explicitly, or this raises.
+        text), so when target_value is not passed explicitly this now
+        extracts one from `difference.query_b_snippet` (same "adopt B's
+        value" convention as join_type/filter) via
+        _extract_date_field_target_from_snippet /
+        _extract_aggregation_target_from_snippet -- both raise ValueError
+        not guess, when the snippet doesn't parse to a single unambiguous
+        target (e.g. a side with its own multiple date columns, or the
+        "differing NUMBER of aggregate calls" shape). Genuinely ambiguous
+        input still fails loudly; only the previously-unconditional raise
+        (regardless of whether extraction was even attempted) is gone.
       - SQLStructuralDifference, category "filter" (Build 3, Day 2, Part
-        13): defaults to `difference.query_b_snippet` (same "adopt B's
-        value" convention as join_type), routed to
-        apply_filter_correction -- which itself raises if that snippet is
-        the "(no filter on this column)" placeholder (the ADD direction
-        is not applicable; original_sql already has the filter and needs
-        REMOVAL instead, a separate, unlocked design decision) or if
-        original_sql already has its own predicate on that column.
-      - SQLStructuralDifference, any other category ("distinct",
-        "grouping", "other"): no mutation rule exists at all -- raises
-        unconditionally, regardless of target_value.
+        13 for ADD, Build 3, Day 2 cleanup, Part 1 for REMOVE): defaults
+        to `difference.query_b_snippet` (same "adopt B's value" convention
+        as join_type), routed to apply_filter_correction, with
+        `difference.query_a_snippet` also passed through as
+        `own_filter_condition` -- used only by the REMOVE branch (when
+        query_b_snippet is the "(no filter on this column)" placeholder,
+        meaning original_sql is the side WITH the filter and needs it
+        stripped), a no-op for the ADD branch.
+      - SQLStructuralDifference, category "distinct" (Build 3, Day 2
+        cleanup, Part 1, new): defaults to
+        `parse_sql(difference.query_b_snippet).has_distinct` -- distinct's
+        own query_a_snippet/query_b_snippet (src.sql_diff._diff_distinct)
+        is each side's FULL raw SQL, not a bare predicate, so "adopt B's
+        value" here means re-parsing B's own SQL for its has_distinct
+        flag, not extracting a snippet fragment. An explicit target_value
+        override for this category is read as the string "true"/"false"
+        (case-insensitive), not any other truthy/falsy convention.
+      - SQLStructuralDifference, category "grouping" or "other": no
+        mutation rule exists at all -- raises UnsupportedCorrectionCategory
+        (NotImplementedError), regardless of target_value. See this
+        module's docstring for why each is left uncovered.
 
     In every case an explicit `target_value` argument overrides the default.
 
@@ -583,22 +833,26 @@ def construct_corrected_query(
         if category == "join_type":
             target = target_value if target_value is not None else _extract_join_target_from_snippet(difference.query_b_snippet)
             return apply_join_type_correction(original_sql, target)
-        if category in ("date_field", "aggregation"):
-            if target_value is None:
-                raise ValueError(
-                    f"SQLStructuralDifference category '{category}' does not carry a "
-                    "structured target value (query_a_snippet/query_b_snippet are "
-                    "descriptive text, not a bare field/function name) -- target_value "
-                    "must be passed explicitly for this category."
-                )
-            return _dispatch_field(original_sql, category, target_value)
+        if category == "date_field":
+            target = target_value if target_value is not None else _extract_date_field_target_from_snippet(difference.query_b_snippet)
+            return apply_date_field_correction(original_sql, target)
+        if category == "aggregation":
+            target = target_value if target_value is not None else _extract_aggregation_target_from_snippet(difference.query_b_snippet)
+            return apply_aggregation_correction(original_sql, target)
         if category == "filter":
             target = target_value if target_value is not None else difference.query_b_snippet
-            return apply_filter_correction(original_sql, target)
-        raise ValueError(
+            return apply_filter_correction(original_sql, target, own_filter_condition=difference.query_a_snippet)
+        if category == "distinct":
+            target_has_distinct = (
+                target_value.strip().lower() == "true"
+                if target_value is not None
+                else parse_sql(difference.query_b_snippet).has_distinct
+            )
+            return apply_distinct_correction(original_sql, target_has_distinct)
+        raise UnsupportedCorrectionCategory(
             f"No corrected-query mutation rule exists for SQLStructuralDifference "
             f"category '{category}'. Covered categories: join_type, date_field, "
-            "aggregation, filter. Not covered: distinct, grouping, other."
+            "aggregation, filter, distinct. Not covered: grouping, other."
         )
 
     raise TypeError(f"construct_corrected_query does not support difference type {type(difference).__name__}.")
