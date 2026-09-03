@@ -91,11 +91,12 @@ def test_case_4_dollar_impact_is_signed_positive_200():
     close-out sign convention (src/schema.py, SelfConsistencyIssue)
     dollar_impact must be POSITIVE 200.0, not just magnitude 200.0."""
     db = str(DATA_SAMPLE_DIR / "case_04_governance_drift_a.duckdb")
-    issues = compute_self_consistency_dollar_impacts(CASE_4_GOVERNANCE_DRIFT.source_a, "a", db)
+    issues, escalations = compute_self_consistency_dollar_impacts(CASE_4_GOVERNANCE_DRIFT.source_a, "a", db)
 
     assert len(issues) == 1
     assert issues[0].declared_field == "excluded_statuses"
     assert issues[0].dollar_impact == 200.0
+    assert escalations == []
 
 
 def test_case_7_dollar_impact_is_signed_negative_100():
@@ -106,11 +107,12 @@ def test_case_7_dollar_impact_is_signed_negative_100():
     (A - B) below what it would be if this cause were fixed, so per the
     sign convention dollar_impact must be NEGATIVE 100.0."""
     db = str(DATA_SAMPLE_DIR / "case_07_precedence_conflict_a.duckdb")
-    issues = compute_self_consistency_dollar_impacts(CASE_7_PRECEDENCE_CONFLICT.source_a, "a", db)
+    issues, escalations = compute_self_consistency_dollar_impacts(CASE_7_PRECEDENCE_CONFLICT.source_a, "a", db)
 
     assert len(issues) == 1
     assert issues[0].declared_field == "excluded_statuses"
     assert issues[0].dollar_impact == -100.0
+    assert escalations == []
 
 
 def test_dollar_impact_empty_for_every_other_self_consistent_side():
@@ -124,7 +126,8 @@ def test_dollar_impact_empty_for_every_other_self_consistent_side():
             if source.declared_definition is None:
                 continue
             db = str(DATA_SAMPLE_DIR / f"{scenario.seed_table}_{side}.duckdb")
-            issues = compute_self_consistency_dollar_impacts(source, side, db)
+            issues, escalations = compute_self_consistency_dollar_impacts(source, side, db)
+            assert escalations == []
             if issues:
                 non_empty_sides.add((scenario.scenario_id, side))
 
@@ -169,12 +172,13 @@ def test_dollar_impact_sign_flips_for_a_source_b_issue():
             ),
         )
 
-        issues = compute_self_consistency_dollar_impacts(source_b, "b", tmp_path)
+        issues, escalations = compute_self_consistency_dollar_impacts(source_b, "b", tmp_path)
 
         assert len(issues) == 1
         assert issues[0].source == "b"
         assert issues[0].declared_field == "excluded_statuses"
         assert issues[0].dollar_impact == 30.0  # (130 corrected) - (100 as-written), unflipped for source "b"
+        assert escalations == []
     finally:
         os.unlink(tmp_path)
 
@@ -211,7 +215,7 @@ def test_case_4_dollar_impact_unaffected_by_suppressed_cause_folding():
     db_a = str(DATA_SAMPLE_DIR / "case_04_governance_drift_a.duckdb")
     db_b = str(DATA_SAMPLE_DIR / "case_04_governance_drift_b.duckdb")
 
-    dd, sci = assemble_definitional_evidence_with_dollar_impacts(
+    dd, sci, escalations = assemble_definitional_evidence_with_dollar_impacts(
         CASE_4_GOVERNANCE_DRIFT.source_a, CASE_4_GOVERNANCE_DRIFT.source_b, db_a, db_b
     )
 
@@ -219,6 +223,7 @@ def test_case_4_dollar_impact_unaffected_by_suppressed_cause_folding():
     assert len(sci) == 1
     assert sci[0].dollar_impact == 200.0  # unchanged from compute_self_consistency_dollar_impacts alone
     assert sci[0].dollar_impact == CASE_4_GOVERNANCE_DRIFT.known_gap
+    assert escalations == []
 
 
 def test_case_7_dollar_impact_combines_self_consistency_and_suppressed_cross_source():
@@ -231,7 +236,7 @@ def test_case_7_dollar_impact_combines_self_consistency_and_suppressed_cross_sou
     db_a = str(DATA_SAMPLE_DIR / "case_07_precedence_conflict_a.duckdb")
     db_b = str(DATA_SAMPLE_DIR / "case_07_precedence_conflict_b.duckdb")
 
-    dd, sci = assemble_definitional_evidence_with_dollar_impacts(
+    dd, sci, escalations = assemble_definitional_evidence_with_dollar_impacts(
         CASE_7_PRECEDENCE_CONFLICT.source_a, CASE_7_PRECEDENCE_CONFLICT.source_b, db_a, db_b
     )
 
@@ -240,3 +245,62 @@ def test_case_7_dollar_impact_combines_self_consistency_and_suppressed_cross_sou
     assert sci[0].declared_field == "excluded_statuses"
     assert sci[0].dollar_impact == 200.0  # -100.0 (self-consistency) + 300.0 (folded suppressed cross-source)
     assert sci[0].dollar_impact == CASE_7_PRECEDENCE_CONFLICT.known_gap
+    assert escalations == []
+
+
+def test_ambiguous_date_columns_produces_escalation_not_crash():
+    """Build 3, Day 2 cleanup, Part 2: compute_self_consistency_dollar_impacts's
+    own construct_corrected_query call (decision 40's own verification pass
+    flagged this as a live, confirmed-reachable crash path, distinct from
+    and unfixed by _single_cause_line_item's own fix). Reused Case 3's own
+    seed data (both order_date and created_at real columns on the orders
+    table) to construct a source declaring date_field='order_date' whose
+    OWN SQL genuinely filters on two date columns at once -- before this
+    fix, this crashed uncaught with DateFieldCorrectionAmbiguous. Now
+    returns a CorrectionEscalation instead; the issue itself is excluded
+    from the resolved list (its dollar_impact could not be computed)."""
+    db_a = str(DATA_SAMPLE_DIR / "case_03_hybrid_fallback_a.duckdb")
+    decl = DeclaredDefinition(date_field="order_date", excluded_statuses=[], aggregation="sum")
+    source = DashboardSource(
+        label="a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE order_date >= '2024-01-01' AND created_at >= '2024-01-01'"
+        ),
+        declared_definition=decl,
+    )
+
+    issues, escalations = compute_self_consistency_dollar_impacts(source, "a", db_a)
+
+    assert issues == []
+    assert len(escalations) == 1
+    escalation = escalations[0]
+    assert "date_field='created_at'" in escalation.cause
+    assert "declared 'order_date'" in escalation.cause
+    assert "ambiguous" in escalation.reason
+
+
+def test_missing_date_columns_produces_escalation_not_crash():
+    """Same fix, the zero-columns shape (DateFieldCorrectionMissing):
+    source declares date_field='order_date' but its own SQL never filters
+    by date at all -- before this fix, crashed uncaught. Now returns a
+    CorrectionEscalation instead. A SEPARATE, independently-resolvable
+    self-consistency issue on excluded_statuses (this source's SQL also
+    excludes an undeclared status) proves partial success and escalation
+    coexist correctly within the same call -- one field's failure does not
+    block another field's real result."""
+    db_a = str(DATA_SAMPLE_DIR / "case_03_hybrid_fallback_a.duckdb")
+    decl = DeclaredDefinition(date_field="order_date", excluded_statuses=[], aggregation="sum")
+    source = DashboardSource(
+        label="a", sql="SELECT SUM(amount) AS revenue FROM orders WHERE status != 'cancelled'", declared_definition=decl
+    )
+
+    issues, escalations = compute_self_consistency_dollar_impacts(source, "a", db_a)
+
+    assert len(issues) == 1
+    assert issues[0].declared_field == "excluded_statuses"
+    assert len(escalations) == 1
+    escalation = escalations[0]
+    assert "date_field='(none found)'" in escalation.cause
+    assert "declared 'order_date'" in escalation.cause
+    assert "does not filter by date at all" in escalation.reason

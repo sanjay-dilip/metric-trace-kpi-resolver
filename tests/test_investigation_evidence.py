@@ -688,3 +688,147 @@ def test_grouping_mismatch_reaches_full_pipeline_as_a_completed_escalation():
     assert evidence.data_quality_issues == []
     assert evidence.reconciliation == []
     assert evidence.unexplained_residual == scenario.known_gap
+
+
+def test_self_consistency_ambiguous_date_columns_reaches_full_pipeline_as_escalation():
+    """Build 3, Day 2 cleanup, Part 2: proves, via the REAL full
+    assemble_investigation_evidence pipeline, that self_consistency.py's
+    own DateFieldCorrectionAmbiguous crash path (decision 40's verification
+    pass flagged this as live and confirmed-reachable, distinct from and
+    unfixed by _single_cause_line_item's own fix) no longer aborts the
+    whole investigation.
+
+    Traced by hand before this fix (via a throwaway script, not committed):
+    assemble_investigation_evidence(scenario) raised
+    src.query_mutation.DateFieldCorrectionAmbiguous uncaught, from inside
+    compute_self_consistency_dollar_impacts (src/self_consistency.py) --
+    entirely before assemble_reconciliation_line_items is ever reached, a
+    different call path from _single_cause_line_item's own crash. Confirmed
+    fixed here: the call completes normally and the ambiguity is visible
+    as a real CorrectionEscalation."""
+    declared = DeclaredDefinition(date_field="order_date", excluded_statuses=[], aggregation="sum")
+    source_a = DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE order_date >= '2024-01-01' AND created_at >= '2024-01-01'"
+        ),
+        declared_definition=declared,
+    )
+    source_b = DashboardSource(
+        label="finance_query",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE order_date >= '2024-01-01'",
+        declared_definition=declared,
+    )
+    scenario = Scenario(
+        scenario_id="scratch_self_consistency_ambiguous_full_pipeline",
+        description="Proof fixture: source_a's own SQL filters on two real date-like columns at once.",
+        source_a=source_a,
+        source_b=source_b,
+        reported_value_a=550.0,
+        reported_value_b=1050.0,
+        known_gap=550.0 - 1050.0,
+        seed_table="case_03_hybrid_fallback",
+    )
+
+    evidence = assemble_investigation_evidence(scenario)
+
+    assert evidence.self_consistency_issues == []
+    # Two escalations fire independently on the same real ambiguity: one
+    # from _single_cause_line_item's own fix (the competing
+    # SQLStructuralDifference date_field finding this construction also
+    # produces, since source_a/source_b use different real date columns),
+    # one from this Part's own self-consistency fix. Both are real,
+    # neither is a duplicate -- confirmed by their distinct `cause` text.
+    assert len(evidence.escalations) == 2
+    self_consistency_escalation = next(e for e in evidence.escalations if "own SQL implements" in e.cause)
+    assert "date_field='created_at'" in self_consistency_escalation.cause
+    assert "declared 'order_date'" in self_consistency_escalation.cause
+    assert evidence.data_quality_issues == []
+
+
+def test_self_consistency_missing_date_columns_reaches_full_pipeline_as_escalation():
+    """Same fix, the zero-columns shape, proven via the real full pipeline.
+    Both sides declare identically and run the IDENTICAL SQL text
+    (deliberately -- keeps sql_differences/definition_differences both
+    empty, isolating this test to the self-consistency path alone rather
+    than also exercising the unrelated, out-of-scope Shapley-pair branch a
+    genuinely differing pair of sides would land in). Each side
+    independently has the same real, unrelated excluded_statuses
+    self-consistency issue (dollar-quantified correctly) alongside its own
+    date_field escalation -- symmetric, cancels to an exact 0.0 residual,
+    confirming partial success and escalation coexist correctly at the
+    full-pipeline level too."""
+    declared = DeclaredDefinition(date_field="order_date", excluded_statuses=[], aggregation="sum")
+    sql = "SELECT SUM(amount) AS revenue FROM orders WHERE status != 'cancelled'"
+    source_a = DashboardSource(label="dashboard_a", sql=sql, declared_definition=declared)
+    source_b = DashboardSource(label="finance_query", sql=sql, declared_definition=declared)
+    scenario = Scenario(
+        scenario_id="scratch_self_consistency_missing_full_pipeline",
+        description="Proof fixture: both sides declare a date_field their identical SQL never filters by.",
+        source_a=source_a,
+        source_b=source_b,
+        reported_value_a=100.0,
+        reported_value_b=100.0,
+        known_gap=0.0,
+        seed_table="case_03_hybrid_fallback",
+    )
+
+    evidence = assemble_investigation_evidence(scenario)
+
+    assert evidence.sql_differences == []
+    assert evidence.definition_differences == []
+    assert len(evidence.escalations) == 2
+    assert all("does not filter by date at all" in e.reason for e in evidence.escalations)
+    assert {i.source for i in evidence.self_consistency_issues} == {"a", "b"}
+    assert all(i.declared_field == "excluded_statuses" for i in evidence.self_consistency_issues)
+    assert evidence.unexplained_residual == 0.0
+
+
+def test_self_consistency_ambiguous_with_suppressed_cross_source_still_completes():
+    """Build 3, Day 2 cleanup, Part 2's own transitivity proof: an
+    ambiguous date_field self-consistency issue that ALSO has a genuine
+    suppressed cross-source counterpart (source_a and source_b declare
+    genuinely different date_field values) does not crash the second,
+    chained construct_corrected_query call inside
+    assemble_definitional_evidence_with_dollar_impacts's own suppressed-
+    cause folding (the "transitively safe" claim documented on that
+    function) -- because the ambiguous issue is filtered out by
+    compute_self_consistency_dollar_impacts before that chained call is
+    ever attempted. Also exercises _single_cause_line_item's own
+    DateFieldCorrectionAmbiguous fix (decision 40) side by side, on the
+    SQLStructuralDifference this same construction produces -- both fixes
+    fire independently on the same real ambiguity, both as
+    CorrectionEscalations, neither as a crash."""
+    declared_a = DeclaredDefinition(date_field="order_date", excluded_statuses=[], aggregation="sum")
+    declared_b = DeclaredDefinition(date_field="created_at", excluded_statuses=[], aggregation="sum")
+    source_a = DashboardSource(
+        label="dashboard_a",
+        sql=(
+            "SELECT SUM(amount) AS revenue FROM orders "
+            "WHERE order_date >= '2024-01-01' AND created_at >= '2024-01-01'"
+        ),
+        declared_definition=declared_a,
+    )
+    source_b = DashboardSource(
+        label="finance_query",
+        sql="SELECT SUM(amount) AS revenue FROM orders WHERE created_at >= '2024-01-01'",
+        declared_definition=declared_b,
+    )
+    scenario = Scenario(
+        scenario_id="scratch_self_consistency_transitivity",
+        description="Proof fixture: ambiguous self-consistency issue with a real suppressed cross-source counterpart.",
+        source_a=source_a,
+        source_b=source_b,
+        reported_value_a=550.0,
+        reported_value_b=1150.0,
+        known_gap=550.0 - 1150.0,
+        seed_table="case_03_hybrid_fallback",
+    )
+
+    evidence = assemble_investigation_evidence(scenario)
+
+    assert evidence.definition_differences == []  # suppressed, per the precedence rule
+    assert evidence.self_consistency_issues == []  # excluded -- dollar_impact could not be computed
+    assert len(evidence.escalations) == 2  # one from _single_cause_line_item, one from self-consistency
+    assert evidence.unexplained_residual == scenario.known_gap

@@ -56,9 +56,10 @@ def test_case_1_single_cause_join_type():
     sign and in fact fully accounts for it."""
     db_a, db_b = _seed_paths(CASE_1_JOIN_TYPE)
     sql_diffs = diff_sql(parse_sql(CASE_1_JOIN_TYPE.source_a.sql), parse_sql(CASE_1_JOIN_TYPE.source_b.sql))
-    dd, sci = assemble_definitional_evidence_with_dollar_impacts(
+    dd, sci, dd_escalations = assemble_definitional_evidence_with_dollar_impacts(
         CASE_1_JOIN_TYPE.source_a, CASE_1_JOIN_TYPE.source_b, db_a, db_b
     )
+    assert dd_escalations == []
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
 
     items, data_quality_issues, escalations = assemble_reconciliation_line_items(
@@ -84,9 +85,10 @@ def test_case_2_shapley_interacting_pair():
     scale, confirmed by rerunning this exact test, not assumed."""
     db_a, db_b = _seed_paths(CASE_2_MULTI_CAUSE)
     sql_diffs = diff_sql(parse_sql(CASE_2_MULTI_CAUSE.source_a.sql), parse_sql(CASE_2_MULTI_CAUSE.source_b.sql))
-    dd, sci = assemble_definitional_evidence_with_dollar_impacts(
+    dd, sci, dd_escalations = assemble_definitional_evidence_with_dollar_impacts(
         CASE_2_MULTI_CAUSE.source_a, CASE_2_MULTI_CAUSE.source_b, db_a, db_b
     )
+    assert dd_escalations == []
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
     assert {d.field for d in dd} == {"excluded_statuses", "aggregation"}
 
@@ -131,9 +133,10 @@ def test_case_3_shapley_interacting_pair_after_decision_12_suppression():
     sql_diffs = diff_sql(
         parse_sql(CASE_3_HYBRID_FALLBACK.source_a.sql), parse_sql(CASE_3_HYBRID_FALLBACK.source_b.sql)
     )
-    dd, sci = assemble_definitional_evidence_with_dollar_impacts(
+    dd, sci, dd_escalations = assemble_definitional_evidence_with_dollar_impacts(
         CASE_3_HYBRID_FALLBACK.source_a, CASE_3_HYBRID_FALLBACK.source_b, db_a, db_b
     )
+    assert dd_escalations == []
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
     assert sql_diffs == []  # decision 12: the redundant date_field structural finding is gone
     assert {d.field for d in dd} == {"date_field", "excluded_statuses"}
@@ -175,9 +178,10 @@ def test_case_4_self_consistency_only():
     sql_diffs = diff_sql(
         parse_sql(CASE_4_GOVERNANCE_DRIFT.source_a.sql), parse_sql(CASE_4_GOVERNANCE_DRIFT.source_b.sql)
     )
-    dd, sci = assemble_definitional_evidence_with_dollar_impacts(
+    dd, sci, dd_escalations = assemble_definitional_evidence_with_dollar_impacts(
         CASE_4_GOVERNANCE_DRIFT.source_a, CASE_4_GOVERNANCE_DRIFT.source_b, db_a, db_b
     )
+    assert dd_escalations == []
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
     assert dd == []
 
@@ -202,9 +206,10 @@ def test_case_7_self_consistency_plus_suppressed_cross_source():
     sql_diffs = diff_sql(
         parse_sql(CASE_7_PRECEDENCE_CONFLICT.source_a.sql), parse_sql(CASE_7_PRECEDENCE_CONFLICT.source_b.sql)
     )
-    dd, sci = assemble_definitional_evidence_with_dollar_impacts(
+    dd, sci, dd_escalations = assemble_definitional_evidence_with_dollar_impacts(
         CASE_7_PRECEDENCE_CONFLICT.source_a, CASE_7_PRECEDENCE_CONFLICT.source_b, db_a, db_b
     )
+    assert dd_escalations == []
     sql_diffs, dd = assemble_structural_and_definitional_evidence(sql_diffs, dd)
     assert dd == []  # suppressed from the reported findings list
 

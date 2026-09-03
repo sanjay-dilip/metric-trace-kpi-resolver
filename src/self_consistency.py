@@ -53,9 +53,9 @@ import sqlglot
 from sqlglot import exp
 
 from src.definition_diff import _values_equal, diff_definitions, infer_definition_from_sql
-from src.query_mutation import construct_corrected_query
+from src.query_mutation import DateFieldCorrectionAmbiguous, DateFieldCorrectionMissing, construct_corrected_query
 from src.reconciliation import single_cause_attribution
-from src.schema import DefinitionDifference, SelfConsistencyIssue, SQLStructuralDifference
+from src.schema import CorrectionEscalation, DefinitionDifference, SelfConsistencyIssue, SQLStructuralDifference
 from src.scenario import DashboardSource
 from src.sql_diff import _bare_column
 from src.sql_parser import parse_sql
@@ -116,7 +116,7 @@ def check_self_consistency(
 
 def compute_self_consistency_dollar_impacts(
     source: DashboardSource, side: Literal["a", "b"], seed_db_path: str
-) -> list[SelfConsistencyIssue]:
+) -> tuple[list[SelfConsistencyIssue], list[CorrectionEscalation]]:
     """Run check_self_consistency, then replace each issue's placeholder
     dollar_impact with a real, execution-based, SIGNED number (Build 1, Day
     6 close-out -- supersedes the Day 6 Task 2 unsigned-magnitude version).
@@ -168,15 +168,65 @@ def compute_self_consistency_dollar_impacts(
     algebraically valid even though it exceeds known_gap's own magnitude --
     a signed decomposition permits that whenever some cause's contribution
     opposes the net direction of the others.
+
+    Return shape (Build 3, Day 2 cleanup, Part 2, changed from a bare
+    list[SelfConsistencyIssue]): a (resolved_issues, escalations) pair.
+    `construct_corrected_query` can raise `DateFieldCorrectionMissing`
+    (source.sql has zero date-like columns) or `DateFieldCorrectionAmbiguous`
+    (source.sql has more than one) for a `date_field` self-consistency
+    issue -- the identical crash shape decision 40's verification pass
+    already fixed for `_single_cause_line_item`
+    (src/reconciliation_assembly.py), reproduced live here for THIS call
+    site before this fix and confirmed to abort the whole investigation
+    the same way. Fixed with the same pattern, reusing the same
+    `CorrectionEscalation` type (src/schema.py) rather than inventing a
+    second one for the same concept: on either exception, the issue is
+    EXCLUDED from `resolved_issues` (its dollar_impact cannot be computed,
+    so there is nothing valid to return for it) and a `CorrectionEscalation`
+    naming the declared/implemented mismatch and the reason it couldn't be
+    dollar-quantified is appended instead.
+
+    Real, worth-stating-plainly tradeoff (unlike `_single_cause_line_item`,
+    where the underlying `DefinitionDifference`/`SQLStructuralDifference`
+    finding survives independently in its own evidence list regardless of
+    whether a `ReconciliationLineItem` could be built for it): here, the
+    `SelfConsistencyIssue` IS the finding -- there is no separate,
+    already-populated list it survives in. Excluding it from
+    `resolved_issues` therefore means the qualitative "this source's SQL
+    contradicts its own declaration" fact is visible ONLY via the
+    `CorrectionEscalation`, not as a `SelfConsistencyIssue` anywhere in
+    the final evidence. This is a deliberate, accepted asymmetry, not an
+    oversight -- reusing check_self_consistency's own 0.0 dollar_impact
+    placeholder here would silently misrepresent "genuinely uncomputable"
+    as "computed and zero," the exact confusion `DataQualityIssue`'s
+    "no_date_filter" category works hard to avoid via its own description
+    field; `SelfConsistencyIssue` has no equivalent free-text field to
+    carry that caveat, so dropping the issue and stating the reason in the
+    escalation instead is the more honest choice available within this
+    schema.
     """
     issues = check_self_consistency(source, side)
-    resolved_issues = []
+    resolved_issues: list[SelfConsistencyIssue] = []
+    escalations: list[CorrectionEscalation] = []
     for issue in issues:
-        corrected_sql = construct_corrected_query(source.sql, issue)
+        try:
+            corrected_sql = construct_corrected_query(source.sql, issue)
+        except (DateFieldCorrectionMissing, DateFieldCorrectionAmbiguous) as exc:
+            escalations.append(
+                CorrectionEscalation(
+                    cause=(
+                        f"source_{issue.source}'s own SQL implements {issue.declared_field}="
+                        f"'{issue.implemented_value}', contradicting its own declared "
+                        f"'{issue.declared_value}'"
+                    ),
+                    reason=f"could not compute a dollar figure for this self-consistency issue: {exc}",
+                )
+            )
+            continue
         raw_delta = single_cause_attribution(seed_db_path, source.sql, corrected_sql)
         impact = -raw_delta if issue.source == "a" else raw_delta
         resolved_issues.append(issue.model_copy(update={"dollar_impact": impact}))
-    return resolved_issues
+    return resolved_issues, escalations
 
 
 def assemble_definitional_evidence(
@@ -227,7 +277,7 @@ def assemble_definitional_evidence_with_dollar_impacts(
     source_b: DashboardSource,
     seed_db_path_a: str,
     seed_db_path_b: str,
-) -> tuple[list[DefinitionDifference], list[SelfConsistencyIssue]]:
+) -> tuple[list[DefinitionDifference], list[SelfConsistencyIssue], list[CorrectionEscalation]]:
     """Build 1, Day 7 Task 1, Part A. Layers execution-based dollar-impact
     computation on top of assemble_definitional_evidence, WITHOUT changing
     that function's own signature or behavior (kept structural/pure so every
@@ -294,6 +344,24 @@ def assemble_definitional_evidence_with_dollar_impacts(
 
     seed_db_path_a/seed_db_path_b are the caller's responsibility to
     resolve, same as compute_self_consistency_dollar_impacts.
+
+    Return shape (Build 3, Day 2 cleanup, Part 2, changed from a
+    2-tuple): a (definition_differences, resolved_issues, escalations)
+    triple. `escalations` carries compute_self_consistency_dollar_impacts's
+    own escalations (Part 2's fix, above) straight through -- any issue it
+    couldn't dollar-quantify never reaches the loop below at all, so it
+    can never reach the two chained construct_corrected_query calls
+    inside this loop (self_consistency_corrected_sql,
+    cross_source_corrected_sql) either. This is not an assumption: those
+    two calls operate on source.sql/self_consistency_corrected_sql for
+    the SAME field compute_self_consistency_dollar_impacts already
+    proved correctable (a pure, deterministic function given the same
+    inputs), so once that function only yields issues it successfully
+    resolved, these two calls are transitively safe -- proven live, not
+    just reasoned, by re-running the exact real fixture that originally
+    crashed this whole chain through assemble_investigation_evidence end
+    to end post-fix (see docs/decisions.md decision 40's own update for
+    this entry, and tests/test_self_consistency.py's committed proof).
     """
     definition_differences, _ = assemble_definitional_evidence(source_a, source_b)
     raw_cross_source_differences = diff_definitions(source_a, source_b)
@@ -303,10 +371,13 @@ def assemble_definitional_evidence_with_dollar_impacts(
     }
 
     resolved_issues: list[SelfConsistencyIssue] = []
+    escalations: list[CorrectionEscalation] = []
     for side, source, seed_db_path in (("a", source_a, seed_db_path_a), ("b", source_b, seed_db_path_b)):
         if source.declared_definition is None:
             continue
-        for issue in compute_self_consistency_dollar_impacts(source, side, seed_db_path):
+        issues, side_escalations = compute_self_consistency_dollar_impacts(source, side, seed_db_path)
+        escalations.extend(side_escalations)
+        for issue in issues:
             suppressed = suppressed_by_field.get(issue.declared_field)
             if suppressed is None:
                 resolved_issues.append(issue)
@@ -325,7 +396,7 @@ def assemble_definitional_evidence_with_dollar_impacts(
             combined_impact = issue.dollar_impact + suppressed_impact
             resolved_issues.append(issue.model_copy(update={"dollar_impact": combined_impact}))
 
-    return definition_differences, resolved_issues
+    return definition_differences, resolved_issues, escalations
 
 
 _DISTINCT_SUFFIX = "_distinct"
