@@ -86,7 +86,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from src.explainer import explain_investigation
+from src.explainer import ConfidenceAssessment, assess_confidence, explain_investigation
 from src.llm_client import generate_structured
 from src.reconciliation_assembly import is_data_quality_dispatched
 from src.schema import DataQualityIssue, DefinitionDifference, InvestigationEvidence, ReconciliationLineItem
@@ -224,11 +224,24 @@ class ScenarioScore(BaseModel):
         ]
     ]
     checks_run: list[str]
-    escalation_status: Literal["not_gradable"] = "not_gradable"
-    """Decision 6's escalation recall / false-escalation rate are explicitly
-    NOT scored in this pass (Build 3, Day 4, Part 6's own locked scope).
-    Always "not_gradable" -- never silently omitted, never a misleading
-    True/False default."""
+    escalation_status: Literal[
+        "true_escalation", "missed_escalation", "false_escalation", "correct_no_escalation", "not_gradable"
+    ] = "not_gradable"
+    """Build 4, decision 45: computed from a ConfidenceAssessment, passed in
+    by the caller, via the ONLY cutoff decision 42 ever tested --
+    confidence=="low" -> escalate, "medium"/"high" -> don't. No new cutoff
+    logic lives here; this field only classifies that already-tested
+    behavior against `entry.is_ambiguous` (decision 6's own two-metric
+    split, ground truth):
+      - is_ambiguous=True,  escalated=True  -> "true_escalation"    (escalation-recall numerator)
+      - is_ambiguous=True,  escalated=False -> "missed_escalation"  (escalation-recall denominator only)
+      - is_ambiguous=False, escalated=True  -> "false_escalation"   (false-escalation numerator)
+      - is_ambiguous=False, escalated=False -> "correct_no_escalation" (false-escalation denominator only)
+    "not_gradable" remains the default and the ONLY possible value when no
+    `confidence` argument is passed to `score_scenario` -- a real, visible
+    marker for "not scored," not a silent omission, preserving every
+    existing call site's behavior (including every test in
+    tests/test_eval_scoring.py written before this field was gradable)."""
 
 
 def _extract_dollar_magnitudes(text: str) -> set[float]:
@@ -624,11 +637,35 @@ def _detect_existence_overclaim(prose: str, evidence: _Evidence) -> bool:
     return False
 
 
-def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
+def _score_escalation_status(
+    entry: BenchmarkEntry, confidence: ConfidenceAssessment | None
+) -> Literal["true_escalation", "missed_escalation", "false_escalation", "correct_no_escalation", "not_gradable"]:
+    """See ScenarioScore.escalation_status's own docstring for the full
+    classification table -- this is its direct implementation, kept as a
+    separate function so score_scenario's own body stays readable."""
+    if confidence is None:
+        return "not_gradable"
+    escalated = confidence.confidence == "low"
+    if entry.is_ambiguous:
+        return "true_escalation" if escalated else "missed_escalation"
+    return "false_escalation" if escalated else "correct_no_escalation"
+
+
+def score_scenario(
+    entry: BenchmarkEntry, prose: str, confidence: ConfidenceAssessment | None = None
+) -> ScenarioScore:
     """Score one already-generated explainer response against `entry`'s
     ground truth. Deliberately does NOT call the LLM -- `prose` must
     already exist, so this function can be tested against fixed strings
-    with zero API cost (Task 2's own requirement)."""
+    with zero API cost (Task 2's own requirement).
+
+    confidence (Build 4, decision 45): the scenario's own already-generated
+    ConfidenceAssessment (src/explainer.py's assess_confidence), likewise
+    never called from here -- optional and keyword-friendly so every
+    existing call site that only ever scored prose keeps working
+    unchanged, with escalation_status defaulting to "not_gradable" exactly
+    as before. See ScenarioScore.escalation_status's own docstring for how
+    a real value is computed when this IS passed."""
     evidence = assemble_investigation_evidence_for_benchmark(entry)
 
     checks_run = ["root_cause"]
@@ -718,6 +755,7 @@ def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
         root_cause_correct=root_cause_correct,
         unsupported_claim_patterns=unsupported_claim_patterns,
         checks_run=checks_run,
+        escalation_status=_score_escalation_status(entry, confidence),
     )
 
 
@@ -728,13 +766,22 @@ def run_benchmark() -> list[ScenarioScore]:
     then score it. Not called by any committed test -- Task 3's own live
     verification run is a manual, reported-by-hand invocation, matching
     this project's standing practice for every prior live-API-call
-    verification (Build 1 Week 2 Day 1 onward)."""
+    verification (Build 1 Week 2 Day 1 onward).
+
+    Build 4, decision 45: also calls assess_confidence (src/explainer.py)
+    for every entry and threads the result into score_scenario, so
+    escalation_status is a real, gradable value here -- not the
+    "not_gradable" default a caller relying on score_scenario alone would
+    get. This doubles this function's real API-call cost (2 calls per
+    entry, not 1) -- an accepted, necessary cost of actually running
+    decision 5's gate, not an oversight."""
     scores = []
     for entry in BENCHMARK_ENTRIES:
         evidence = assemble_investigation_evidence_for_benchmark(entry)
         dispatched = is_data_quality_dispatched(entry.scenario.scenario_id)
         prose = explain_investigation(evidence, data_quality_checked=dispatched)
-        scores.append(score_scenario(entry, prose))
+        confidence = assess_confidence(evidence, data_quality_checked=dispatched)
+        scores.append(score_scenario(entry, prose, confidence))
     return scores
 
 

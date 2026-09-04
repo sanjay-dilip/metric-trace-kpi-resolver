@@ -6,6 +6,7 @@ run_benchmark() verification is reported by hand in the PR, not automated
 here -- matching this project's own standing practice (test_explainer.py's
 own docstring states the same split for _format_evidence_prompt)."""
 
+from src.explainer import ConfidenceAssessment
 from tests.fixtures import eval_scoring
 from tests.fixtures.benchmark_entries import BENCHMARK_ENTRIES
 from tests.fixtures.eval_scoring import LLMClaimGrading, score_scenario, score_scenario_llm_graded
@@ -212,7 +213,10 @@ def test_flags_residual_self_contradiction_on_a_one_sided_violation():
     assert "residual_self_contradiction" in score.unsupported_claim_patterns
 
 
-def test_escalation_status_always_not_gradable():
+def test_escalation_status_not_gradable_when_no_confidence_passed():
+    """The pre-existing, still-default behavior: score_scenario without a
+    `confidence` argument never grades escalation, exactly as before this
+    field became gradable at all."""
     entry = _ENTRY_BY_ID["case_01_join_type"]
     score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.")
     assert score.escalation_status == "not_gradable"
@@ -222,6 +226,34 @@ def test_escalation_status_always_not_gradable():
         ambiguous_entry, "A date-field difference has a dollar impact of $350.00."
     )
     assert ambiguous_score.escalation_status == "not_gradable"
+
+
+def test_escalation_status_true_escalation_on_ambiguous_low_confidence():
+    entry = _ENTRY_BY_ID["ambiguous_refund_timing"]
+    confidence = ConfidenceAssessment(confidence="low", reason="Genuine business-rule ambiguity.")
+    score = score_scenario(entry, "A date-field difference has a dollar impact of $350.00.", confidence)
+    assert score.escalation_status == "true_escalation"
+
+
+def test_escalation_status_missed_escalation_on_ambiguous_medium_confidence():
+    entry = _ENTRY_BY_ID["ambiguous_refund_timing"]
+    confidence = ConfidenceAssessment(confidence="medium", reason="Some uncertainty remains.")
+    score = score_scenario(entry, "A date-field difference has a dollar impact of $350.00.", confidence)
+    assert score.escalation_status == "missed_escalation"
+
+
+def test_escalation_status_false_escalation_on_non_ambiguous_low_confidence():
+    entry = _ENTRY_BY_ID["case_01_join_type"]
+    confidence = ConfidenceAssessment(confidence="low", reason="Some caveat unrelated to ambiguity.")
+    score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.", confidence)
+    assert score.escalation_status == "false_escalation"
+
+
+def test_escalation_status_correct_no_escalation_on_non_ambiguous_high_confidence():
+    entry = _ENTRY_BY_ID["case_01_join_type"]
+    confidence = ConfidenceAssessment(confidence="high", reason="Clean, fully-reconciled finding.")
+    score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.", confidence)
+    assert score.escalation_status == "correct_no_escalation"
 
 
 def test_checks_run_omits_patterns_with_no_applicable_evidence():
