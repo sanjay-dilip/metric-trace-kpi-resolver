@@ -238,6 +238,17 @@ def test_checks_run_omits_patterns_with_no_applicable_evidence():
     finding #2's widened gate) and Case 1 is genuinely undispatched
     (decision 36's finding #3's new check) -- this is the correct,
     intended behavior of both widenings, not a regression to work around.
+
+    Decision 44: existence_overclaim also now runs here. Nothing about
+    Case 1's own evidence changed by this addition -- its reconciliation
+    was already non-empty before decision 44 existed. What changed is
+    score_scenario itself: it gained a new gate (`if any([bool(evidence
+    .reconciliation), ...])`) that did not exist before, and that gate's
+    condition is evaluated against Case 1's own already-true, unchanged
+    fact. The trigger for this list growing is the new code path, not a
+    new fact about Case 1 -- the same distinction this project's own
+    decision log makes explicit elsewhere between "restated" and
+    "recomputed."
     """
     entry = _ENTRY_BY_ID["case_01_join_type"]
     score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.")
@@ -247,6 +258,7 @@ def test_checks_run_omits_patterns_with_no_applicable_evidence():
         "hedge_then_retract",
         "residual_self_contradiction",
         "data_quality_overclaim",
+        "existence_overclaim",
     ]
     assert "sign_dropping" not in score.checks_run
 
@@ -672,6 +684,105 @@ def test_does_not_flag_fact_doubling_when_no_total_is_claimed():
     score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.")
     assert "fact_doubling" not in score.unsupported_claim_patterns
     assert "fact_doubling" in score.checks_run
+
+
+# --- Decision 43's own sixth pattern (existence_overclaim): both real ---
+# --- quotes are from the confidence-step's `reason` field (decision 42's ---
+# --- Part 3 addendum, the omission variant), not explainer prose -- the ---
+# --- first committed proof that score_scenario scores either input shape. ---
+
+
+def test_detects_existence_overclaim_on_case_16_real_transcript():
+    """The actual case_16 target (decision 42/43): a real, single reconciled
+    cause (excluded_statuses, dollar_impact=300.0, matching known_gap
+    exactly) narrated as absent. Quoted verbatim from the confidence step's
+    own real `reason` field, not the explainer -- this scenario's
+    reconciliation list is what makes the claim false."""
+    entry = _ENTRY_BY_ID["case_16_excluded_statuses_declared"]
+    prose = (
+        "The investigation did not identify any reconciled causes with a significant "
+        "dollar impact, and the unexplained residual is zero, which may indicate the "
+        "presence of other uninvestigated causes."
+    )
+    score = score_scenario(entry, prose)
+    assert "existence_overclaim" in score.unsupported_claim_patterns
+    assert "existence_overclaim" in score.checks_run
+
+
+def test_detects_existence_overclaim_on_ambiguous_revenue_recognition_real_transcript():
+    """The second real target: two real, declared, high-confidence
+    DefinitionDifference entries (date_field, excluded_statuses) narrated
+    as absent, in the same sentence that correctly describes
+    self_consistency_issues as empty (which IS genuinely true for this
+    scenario) -- proving the detector attributes the claim to the right
+    category rather than flagging on a bare 'did not identify any' match."""
+    entry = _ENTRY_BY_ID["ambiguous_revenue_recognition"]
+    prose = (
+        "The investigation found multiple reconciled causes with a small unexplained "
+        "residual, but it did not identify any definitional differences or "
+        "self-consistency issues, which suggests that the discrepancy is largely "
+        "accounted for, but further investigation may still be necessary to confirm "
+        "its completeness."
+    )
+    score = score_scenario(entry, prose)
+    assert "existence_overclaim" in score.unsupported_claim_patterns
+    assert "existence_overclaim" in score.checks_run
+
+
+def test_does_not_flag_existence_overclaim_when_the_named_category_is_genuinely_empty():
+    """Over-fire guard, same standard as decision 37's own false-positive
+    sweep before data_quality_overclaim shipped: case_16's own real
+    self_consistency_issues IS genuinely empty (confirmed by direct
+    execution). A correct 'did not identify any self-consistency issues'
+    claim, appearing in the SAME response as a correct, affirmative claim
+    about the (real, populated) reconciled cause, must not misfire --
+    proving category attribution, not mere co-occurrence of the phrase
+    'reconciled cause' anywhere in the response."""
+    entry = _ENTRY_BY_ID["case_16_excluded_statuses_declared"]
+    prose = (
+        "The investigation did not identify any self-consistency issues, but did "
+        "identify a reconciled cause that explains the entire dollar gap."
+    )
+    score = score_scenario(entry, prose)
+    assert "existence_overclaim" not in score.unsupported_claim_patterns
+    assert "existence_overclaim" in score.checks_run
+
+
+def test_does_not_flag_existence_overclaim_when_no_category_is_referenced():
+    entry = _ENTRY_BY_ID["case_01_join_type"]
+    score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.")
+    assert "existence_overclaim" not in score.unsupported_claim_patterns
+
+
+def test_existence_overclaim_check_does_not_run_when_all_three_categories_are_genuinely_empty():
+    """Case 5: a real, nonzero known_gap with no findable cause at all --
+    reconciliation, definition_differences, and self_consistency_issues are
+    all genuinely empty. The check must not even attempt to run here (see
+    checks_run), matching hedge_then_retract's own any(...)-gated
+    convention just above it in score_scenario."""
+    entry = _ENTRY_BY_ID["case_05_unexplained_residual"]
+    score = score_scenario(
+        entry, "No cause was identified for this investigation, and the entire gap remains unexplained."
+    )
+    assert "existence_overclaim" not in score.checks_run
+
+
+def test_case_2_real_transcript_did_not_identify_any_other_causes_does_not_misfire():
+    """Cross-check against a real, already-committed transcript that also
+    contains the literal lead-in 'did not identify any' but pairs it with
+    'other causes' -- not one of the three named category phrases --
+    confirming this new pattern stays silent on decision 36 finding #2's
+    own real quote rather than accidentally re-flagging it under a new
+    name."""
+    entry = _ENTRY_BY_ID["case_02_multi_cause"]
+    prose = (
+        "The unexplained residual is $0.00, which means that the gap is fully explained by the causes "
+        "found. However, it's essential to acknowledge that the investigation did not identify any other "
+        "causes beyond those mentioned, and it's possible that there may be additional factors at play "
+        "that were not captured by this analysis."
+    )
+    score = score_scenario(entry, prose)
+    assert "existence_overclaim" not in score.unsupported_claim_patterns
 
 
 # --- Build 3, Day 4, Part 8, Task 2: mocked test for the LLM-graded ---

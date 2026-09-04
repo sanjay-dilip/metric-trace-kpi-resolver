@@ -220,6 +220,7 @@ class ScenarioScore(BaseModel):
             "residual_self_contradiction",
             "fact_doubling",
             "data_quality_overclaim",
+            "existence_overclaim",
         ]
     ]
     checks_run: list[str]
@@ -543,6 +544,86 @@ def _detect_data_quality_overclaim(prose: str) -> bool:
     return any(phrase in lowered for phrase in _DATA_QUALITY_OVERCLAIM_PHRASES)
 
 
+_EXISTENCE_OVERCLAIM_LEADIN_RE = re.compile(r"did not identify any", re.IGNORECASE)
+"""Decision 43's own two real quotes (`docs/decisions.md`, classified there
+before this detector was built in decision 44) both use this exact
+construction -- `case_16_excluded_statuses_declared`'s fresh omission-
+variant response ('The investigation did not identify any reconciled
+causes with a significant dollar impact...') and
+`ambiguous_revenue_recognition`'s ('...it did not identify any
+definitional differences or self-consistency issues...'). Deliberately a
+single, narrow lead-in grounded in two independent real quotes sharing it
+verbatim, not a broader "no X was found"/"none were found" list invented
+without a matching real example -- decision 37's own caution against
+generalizing from a single case applies doubly here, since this pattern
+has exactly two real data points total."""
+
+_EXISTENCE_OVERCLAIM_CATEGORY_PHRASES: dict[str, list[str]] = {
+    "reconciliation": ["reconciled cause"],
+    "definition_differences": ["definitional difference"],
+    "self_consistency_issues": ["self-consistency issue", "self consistency issue"],
+}
+"""Maps each InvestigationEvidence field this pattern can misdescribe as
+empty to the phrase(s) a model uses to name it in prose -- grounded
+directly in decision 43's two real quotes ('reconciled causes',
+'definitional differences', 'self-consistency issues'), not a general
+paraphrase-synonym list like _CATEGORY_PROSE_SYNONYMS (that dict covers
+SQLStructuralDifference/DataQualityIssue CATEGORY values -- 'join_type',
+'stale_extract' -- a different vocabulary from these three EVIDENCE FIELD
+names). Dict keys are the real InvestigationEvidence/PartialInvestigationEvidence
+attribute names themselves, read directly via getattr in
+_detect_existence_overclaim -- deliberately not a separate lookup table
+that could drift out of sync with the schema. sql_differences and
+data_quality_issues are NOT included: no real quote has ever claimed either
+absent when populated, and data_quality_issues already has its own,
+differently-shaped detector (_detect_data_quality_overclaim, an
+AFFIRMATIVE-clean-claim pattern gated on dispatch status, not a
+NEGATED-existence pattern gated on population -- the two are mirror
+images, not the same check with a different phrase list)."""
+
+_EXISTENCE_OVERCLAIM_WINDOW_BOUNDARY_RE = re.compile(r"[.!?]|,\s+(?:and|but|or|yet|so|which)\b", re.IGNORECASE)
+"""A local, forward-scanning boundary for this detector's own search
+window only -- deliberately NOT the shared _SENTENCE_BOUNDARY_RE (used
+elsewhere for backward negation-scoping by every other detector in this
+module), so this addition cannot change any existing pattern's behavior.
+Adds 'which' to the coordinating-conjunction list _SENTENCE_BOUNDARY_RE
+already has: `ambiguous_revenue_recognition`'s own real quote continues
+'...self-consistency issues, WHICH SUGGESTS that the discrepancy is
+largely accounted for...' -- without stopping at 'which', the window would
+run on into unrelated later clauses, which happens to still work correctly
+for this project's exactly two real transcripts today but is a real,
+avoidable risk for a future transcript this detector hasn't seen yet."""
+
+
+def _detect_existence_overclaim(prose: str, evidence: _Evidence) -> bool:
+    """Decision 44's detector for the pattern decision 43 classified: a
+    bare, unqualified claim that a category was NOT found ('did not
+    identify any X'), where the real evidence for that specific category
+    is in fact non-empty -- the mirror
+    image of data_quality_overclaim (an AFFIRMATIVE clean claim in an
+    UNCHECKED category; this is a NEGATED existence claim in a POPULATED
+    one). Deliberately per-category, not a bare phrase-in-response scan:
+    for each 'did not identify any' occurrence, only the text up to the
+    next clause boundary (_EXISTENCE_OVERCLAIM_WINDOW_BOUNDARY_RE) is
+    checked for a category phrase -- a scenario correctly saying 'did not
+    identify any self-consistency issues' (true) elsewhere in the same
+    response as a correct, affirmative 'found a reconciled cause' sentence
+    must not misfire on 'reconciled cause' just because both appear
+    somewhere in the same prose; only the category actually named in THIS
+    lead-in's own clause is checked against THAT category's real
+    population."""
+    for match in _EXISTENCE_OVERCLAIM_LEADIN_RE.finditer(prose):
+        following = prose[match.end() :]
+        boundary = _EXISTENCE_OVERCLAIM_WINDOW_BOUNDARY_RE.search(following)
+        window = following[: boundary.start()] if boundary else following
+        lowered_window = window.lower()
+        for category, phrases in _EXISTENCE_OVERCLAIM_CATEGORY_PHRASES.items():
+            if any(re.search(r"\b" + re.escape(phrase), lowered_window) for phrase in phrases):
+                if getattr(evidence, category):
+                    return True
+    return False
+
+
 def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
     """Score one already-generated explainer response against `entry`'s
     ground truth. Deliberately does NOT call the LLM -- `prose` must
@@ -560,6 +641,7 @@ def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
             "residual_self_contradiction",
             "fact_doubling",
             "data_quality_overclaim",
+            "existence_overclaim",
         ]
     ] = []
 
@@ -610,6 +692,26 @@ def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
         checks_run.append("data_quality_overclaim")
         if _detect_data_quality_overclaim(prose):
             unsupported_claim_patterns.append("data_quality_overclaim")
+
+    # Decision 44: only meaningful when at least one of the three categories
+    # this pattern covers (reconciliation, definition_differences,
+    # self_consistency_issues) is actually populated -- if all three are
+    # genuinely empty (Case 5, Case 6), no "did not identify any X" claim
+    # about any of them could ever be an overclaim, so there is nothing this
+    # check could find. The detector itself still gates per-category on real
+    # population (see _detect_existence_overclaim's own docstring); this
+    # outer condition only decides whether the check is applicable at all,
+    # the same role categories_populated's own any(...) plays for
+    # hedge_then_retract above.
+    existence_overclaim_categories_populated = [
+        bool(evidence.reconciliation),
+        bool(evidence.definition_differences),
+        bool(evidence.self_consistency_issues),
+    ]
+    if any(existence_overclaim_categories_populated):
+        checks_run.append("existence_overclaim")
+        if _detect_existence_overclaim(prose, evidence):
+            unsupported_claim_patterns.append("existence_overclaim")
 
     return ScenarioScore(
         scenario_id=entry.scenario.scenario_id,
