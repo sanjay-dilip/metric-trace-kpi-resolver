@@ -239,10 +239,16 @@ def test_checks_run_omits_patterns_with_no_applicable_evidence():
     (decision 36's finding #3's new check) -- this is the correct,
     intended behavior of both widenings, not a regression to work around.
 
-    Decision 43: existence_overclaim also legitimately runs -- Case 1's own
-    reconciliation is non-empty (the one populated category this check's
-    outer gate needs), so the check is applicable even though this
-    particular prose never triggers it.
+    Decision 44: existence_overclaim also now runs here. Nothing about
+    Case 1's own evidence changed by this addition -- its reconciliation
+    was already non-empty before decision 44 existed. What changed is
+    score_scenario itself: it gained a new gate (`if any([bool(evidence
+    .reconciliation), ...])`) that did not exist before, and that gate's
+    condition is evaluated against Case 1's own already-true, unchanged
+    fact. The trigger for this list growing is the new code path, not a
+    new fact about Case 1 -- the same distinction this project's own
+    decision log makes explicit elsewhere between "restated" and
+    "recomputed."
     """
     entry = _ENTRY_BY_ID["case_01_join_type"]
     score = score_scenario(entry, "A join-type mismatch has a dollar impact of $300.00.")

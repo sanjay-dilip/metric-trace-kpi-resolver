@@ -545,8 +545,9 @@ def _detect_data_quality_overclaim(prose: str) -> bool:
 
 
 _EXISTENCE_OVERCLAIM_LEADIN_RE = re.compile(r"did not identify any", re.IGNORECASE)
-"""Decision 43's own two real quotes (`docs/decisions.md`) both use this
-exact construction -- `case_16_excluded_statuses_declared`'s fresh omission-
+"""Decision 43's own two real quotes (`docs/decisions.md`, classified there
+before this detector was built in decision 44) both use this exact
+construction -- `case_16_excluded_statuses_declared`'s fresh omission-
 variant response ('The investigation did not identify any reconciled
 causes with a significant dollar impact...') and
 `ambiguous_revenue_recognition`'s ('...it did not identify any
@@ -595,9 +596,10 @@ avoidable risk for a future transcript this detector hasn't seen yet."""
 
 
 def _detect_existence_overclaim(prose: str, evidence: _Evidence) -> bool:
-    """Decision 43's own named pattern: a bare, unqualified claim that a
-    category was NOT found ('did not identify any X'), where the real
-    evidence for that specific category is in fact non-empty -- the mirror
+    """Decision 44's detector for the pattern decision 43 classified: a
+    bare, unqualified claim that a category was NOT found ('did not
+    identify any X'), where the real evidence for that specific category
+    is in fact non-empty -- the mirror
     image of data_quality_overclaim (an AFFIRMATIVE clean claim in an
     UNCHECKED category; this is a NEGATED existence claim in a POPULATED
     one). Deliberately per-category, not a bare phrase-in-response scan:
@@ -691,7 +693,7 @@ def score_scenario(entry: BenchmarkEntry, prose: str) -> ScenarioScore:
         if _detect_data_quality_overclaim(prose):
             unsupported_claim_patterns.append("data_quality_overclaim")
 
-    # Decision 43: only meaningful when at least one of the three categories
+    # Decision 44: only meaningful when at least one of the three categories
     # this pattern covers (reconciliation, definition_differences,
     # self_consistency_issues) is actually populated -- if all three are
     # genuinely empty (Case 5, Case 6), no "did not identify any X" claim
