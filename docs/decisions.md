@@ -828,4 +828,54 @@ A second cross-check against a real, already-committed transcript (decision 36 f
 
 **Regression, run against both `test_eval_scoring.py` and `test_explainer.py` (this touches shared scoring infrastructure, per this task's own verification requirement):** full suite **232/232 passing** (226 prior + 6 new -- both real-transcript detections, the constructed false-positive sweep, a no-category-referenced silence check, a check confirming `existence_overclaim` never even attempts to run when all three categories are genuinely empty [Case 5], and the Case 2 cross-check above). One pre-existing test (`test_checks_run_omits_patterns_with_no_applicable_evidence`, asserting Case 1's exact `checks_run` list) required updating in place -- not a defect, the correct, intended consequence of Case 1's `reconciliation` being genuinely non-empty (this check's own applicability gate), the same kind of legitimate list-growth its own docstring already documents happening twice before for `residual_self_contradiction` and `data_quality_overclaim`.
 
+## 45. Decision 5's ablation gate run for real, all four thresholds, for the first time -- 3 of 4 fail; the skeptic/verifier is in scope for Build 4
+
+**Decision:** Closes the "Inherited, blocking dependency" Build 4 has carried since Build 3's own close-out (CONTEXT.md). `ScenarioScore.escalation_status` (`tests/fixtures/eval_scoring.py`) is wired to a real value: `score_scenario` gains an optional `confidence: ConfidenceAssessment | None` parameter, and applies exactly the one cutoff decision 42 already tested and rejected on a 12-scenario sample -- `confidence=="low"` -> escalate, `"medium"`/`"high"` -> don't -- classified against `entry.is_ambiguous` into `true_escalation`/`missed_escalation`/`false_escalation`/`correct_no_escalation`, or `not_gradable` when no `confidence` is passed (every pre-existing call site is unaffected). No new cutoff logic, no new confidence-step prompt variant -- that door was explicitly closed by decision 42 Part 3's own conclusion before this session began.
+
+`scripts/run_decision5_gate.py` then ran the real gate: `explain_investigation` + `assess_confidence` (both real Ollama calls, `llama3.1:8b`) for every one of the 24 `BENCHMARK_ENTRIES`, scored via `score_scenario`. 48 real calls, 5625.4s (93.8 minutes) total wall clock -- the first time this project has run root-cause accuracy, escalation recall, false-escalation rate, and unsupported-claim rate together, against the full committed benchmark, in one pass.
+
+**Full per-scenario results (24/24, real calls):**
+
+| Scenario | is_ambiguous | root_cause_correct | escalation_status | unsupported_claim_patterns |
+|---|---|---|---|---|
+| case_01_join_type | False | True | correct_no_escalation | [] |
+| case_02_multi_cause | False | True | **false_escalation** | ['residual_self_contradiction'] |
+| case_03_hybrid_fallback | False | True | correct_no_escalation | ['sign_dropping'] |
+| case_04_governance_drift | False | True | correct_no_escalation | [] |
+| case_05_unexplained_residual | False | True | **false_escalation** | [] |
+| case_06_negative_control | False | True | **false_escalation** | [] |
+| case_07_precedence_conflict | False | True | correct_no_escalation | [] |
+| case_08_stale_extract | False | True | **false_escalation** | [] |
+| case_09_missing_partition | False | True | correct_no_escalation | [] |
+| case_10_referential_integrity | False | True | correct_no_escalation | [] |
+| case_11_referential_integrity_source_b | False | True | correct_no_escalation | [] |
+| case_15_date_field_inferred_only | False | True | correct_no_escalation | [] |
+| case_16_excluded_statuses_declared | False | True | correct_no_escalation | [] |
+| case_17_join_type_excluded_statuses_interacting | False | True | correct_no_escalation | [] |
+| case_18_join_type_only | False | True | correct_no_escalation | [] |
+| case_19_date_field_excluded_statuses_declared | False | True | **false_escalation** | [] |
+| case_20_stale_extract_join_collision | False | True | correct_no_escalation | ['sign_dropping'] |
+| case_21_filter_add_direction | False | True | correct_no_escalation | [] |
+| ambiguous_refund_timing | True | True | true_escalation | [] |
+| ambiguous_revenue_recognition | True | True | true_escalation | [] |
+| ambiguous_customer_counting | True | True | **missed_escalation** | ['existence_overclaim'] |
+| ambiguous_attribution | True | True | true_escalation | [] |
+| ambiguous_currency_timing | True | True | **missed_escalation** | [] |
+| ambiguous_active_user_convention | True | True | **missed_escalation** | [] |
+
+**All four thresholds, stated plainly, per-threshold, none rounded toward pass or fail:**
+
+1. **Root-cause accuracy: 24/24 = 100.0%** against a >=80% threshold -- **PASS.** The deterministic core's reconciliation math and the explainer's narration of it hold up cleanly across every scenario type in the current benchmark, including every data-quality, self-consistency, and interacting-pair shape.
+2. **Escalation recall (ambiguous subset): 3/6 = 50.0%** against a >=90% threshold -- **FAIL.** Worse than decision 42's own 12-scenario sample (4/6 = 67%) -- a wider, full-benchmark sample moved this number DOWN, not toward the gate. This is new information in its own right, not merely confirmation of the earlier finding: `ambiguous_customer_counting`, `ambiguous_currency_timing`, and `ambiguous_active_user_convention` all landed at `medium` confidence (missed) on this run, where decision 42's own smaller sample had 4 of 6 ambiguous scenarios reading `low`.
+3. **False-escalation rate (non-ambiguous subset): 5/18 = 27.8%** against decision 6's own recorded `<=2/15` raw-count threshold -- **FAIL**, both by the literal raw-count rule (5 > 2) and by the `<=2/15` (~13.3%) rate applied to the actual 18-scenario subset (27.8% > 13.3%). Named explicitly, not silently absorbed: decision 6's own threshold text still says "15 non-ambiguous scenarios," a number that predates decision 29's benchmark-size correction (the real committed count is 18) -- this entry applies the threshold as recorded, exactly as this task's own brief required, rather than re-deriving a new denominator-adjusted threshold nobody has locked. Somewhat better than decision 42's 12-scenario sample (2/6 = 33%) in rate terms, but still a clear, wide-margin fail either way.
+4. **Unsupported-claim rate: 4/24 = 16.7%** against a <=10% threshold -- **FAIL.** This is the first time this threshold has ever actually been computed against the full committed benchmark in one pass -- prior sessions validated the detector's own mechanics (decisions 32, 33, 34, 36, 37, 44) against individual transcripts and small re-test samples, but never assembled a single aggregate rate number across all 24 scenarios until this run. The four flagged scenarios: `case_02_multi_cause` (`residual_self_contradiction`), `case_03_hybrid_fallback` and `case_20_stale_extract_join_collision` (both `sign_dropping`), and `ambiguous_customer_counting` (`existence_overclaim`) -- all four are previously-named, already-understood defect patterns (decisions 14, 30, 44), not a new unnamed failure mode.
+
+**Conclusion, applying decision 5's own rule exactly as written, not softened for a known-weak signal:** three of the four thresholds fail. Decision 5 states plainly that failing any one of the four means the skeptic/verifier ships. **The skeptic/verifier agent is therefore in scope for Build 4** -- not cut. This is Option A from this task's own brief: let the gate's own locked rule decide, rather than inventing an exception because the escalation leg is known to run on a signal decision 42 already characterized as unreliable.
+
+**Explicit qualification, not a silent number:** the escalation leg of this result (thresholds 2 and 3) runs entirely on `ConfidenceAssessment.confidence`, a signal decision 42 (this same `docs/decisions.md`) already found does not reliably track genuine business-rule ambiguity -- its own reasoning fixates on an unrelated "data-quality wasn't checked" caveat on 9 of 12 sampled responses, and neither of the two structural variants tested there (omission, separation) improved the naive cutoff; both made it worse. This run's 50%/27.8% result is not evidence that a better-designed escalation signal would also fail decision 5's gate -- it is evidence that THIS signal, already known to be weak, remains weak at full scale. Root-cause accuracy (threshold 1) and unsupported-claim rate (threshold 4) do not share this caveat -- both are computed directly from `score_scenario`'s deterministic-evidence-grounded checks, independent of the confidence step entirely.
+
+**What this decision does NOT do:** does not tune, retry, or redesign the confidence-step cutoff -- that door is closed (decision 42 Part 3's own conclusion, restated in this task's own brief). Does not re-run any individual scenario seeking a cleaner number (this project's own standing anti-overfitting rule, decisions 14/30/32). Does not begin any LangGraph/multi-agent orchestration work -- the skeptic/verifier's own design is separately-scoped future work, not started here. Does not resolve decision 6's own stale "15 non-ambiguous scenarios" threshold-denominator mismatch against the real 18-scenario count -- named here, not silently corrected, since revising a locked threshold was explicitly out of this task's scope.
+
+**Separately, in the same session:** corrected a stale CONTEXT.md Open Items entry (not part of the public repo, gitignored) describing the `sql_diff` `aggregation` vs. `definition_diff` `aggregation` collision as unproven -- decision 35 (PR #142) had already resolved it, and the note was never updated after that PR merged. Recorded here because it is a factual correction to the project's own record, not merely a housekeeping edit.
+
 **What this decision does NOT do:** it does not touch `_detect_sign_dropping`, `_detect_hedge_then_retract`, `_detect_residual_self_contradiction`, `_detect_fact_doubling`, or `_detect_data_quality_overclaim` -- none of the five existing detectors or their shared `_SENTENCE_BOUNDARY_RE`/`_NEGATION_RE` infrastructure is modified. It does not build any detection for finding #1 (Case 20's cardinality miscount remains separately unbuilt, still needing a numeral-extraction approach if a future session tackles it). It does not change `assess_confidence`'s or `explain_investigation`'s prompt. It does not re-run the confidence batch or make any new live API calls.
