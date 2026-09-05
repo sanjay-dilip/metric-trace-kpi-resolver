@@ -38,6 +38,22 @@ T = TypeVar("T", bound=BaseModel)
 _DEFAULT_HF_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 _DEFAULT_OLLAMA_MODEL = "llama3.1:8b"
 _DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+_DEFAULT_OLLAMA_TEMPERATURE = 0.0
+_DEFAULT_OLLAMA_SEED = 42
+"""Confirmed, before this constant existed, that _call_ollama's payload set
+neither -- Ollama's own defaults (temperature 0.8, no fixed seed) are
+inherently non-reproducible. Decision 45's pre-merge follow-up
+(docs/decisions.md, PR #168) found this in practice: 3 of 12 scenarios
+shared between two independent runs flipped ConfidenceAssessment.confidence
+with no prompt or code change in between, swinging escalation recall by 17
+points in one case. Temperature 0 requests the model's most-likely token at
+every step; a fixed seed (42, this project's own existing
+random.sample(..., 42) convention, scripts/run_confidence_batch.py) fixes
+Ollama's own internal sampling RNG. Both are needed together -- temperature
+alone does not guarantee bit-identical output across calls on most
+backends, and a fixed seed without temperature 0 still samples from a wide
+distribution -- see decision 46 (docs/decisions.md) for the live
+before/after proof."""
 
 _OLLAMA_TIMEOUT_SECONDS = 1800
 """Build 4 migration, Part 1: originally set to 300s, reasoned from Part 0/
@@ -77,6 +93,8 @@ class LLMSettings(BaseSettings):
     hf_model: str = _DEFAULT_HF_MODEL
     ollama_model: str = _DEFAULT_OLLAMA_MODEL
     ollama_base_url: str = _DEFAULT_OLLAMA_BASE_URL
+    ollama_temperature: float = _DEFAULT_OLLAMA_TEMPERATURE
+    ollama_seed: int = _DEFAULT_OLLAMA_SEED
 
 
 @lru_cache(maxsize=1)
@@ -140,9 +158,9 @@ def _generate_huggingface(prompt: str, response_schema: type[T] | None) -> str |
     return content
 
 
-def _ollama_settings() -> tuple[str, str]:
+def _ollama_settings() -> tuple[str, str, float, int]:
     settings = LLMSettings()
-    return settings.ollama_model, settings.ollama_base_url
+    return settings.ollama_model, settings.ollama_base_url, settings.ollama_temperature, settings.ollama_seed
 
 
 def _is_ollama_connection_error(exc: BaseException) -> bool:
@@ -166,11 +184,12 @@ def _is_ollama_connection_error(exc: BaseException) -> bool:
     reraise=True,
 )
 def _call_ollama(prompt: str, response_schema: type[BaseModel] | None) -> dict:
-    model, base_url = _ollama_settings()
+    model, base_url, temperature, seed = _ollama_settings()
     payload: dict = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
+        "options": {"temperature": temperature, "seed": seed},
     }
     if response_schema is not None:
         payload["format"] = response_schema.model_json_schema()

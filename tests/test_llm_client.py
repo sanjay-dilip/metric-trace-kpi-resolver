@@ -280,6 +280,8 @@ def test_call_ollama_sends_format_schema_and_default_model(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.delenv("OLLAMA_MODEL", raising=False)
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_TEMPERATURE", raising=False)
+    monkeypatch.delenv("OLLAMA_SEED", raising=False)
     captured = {}
 
     def fake_post(url, json, timeout):
@@ -296,3 +298,44 @@ def test_call_ollama_sends_format_schema_and_default_model(monkeypatch):
     assert captured["json"]["model"] == "llama3.1:8b"
     assert captured["json"]["format"] == _DummySchema.model_json_schema()
     assert captured["timeout"] == llm_client._OLLAMA_TIMEOUT_SECONDS
+
+
+def test_call_ollama_sends_deterministic_default_options(monkeypatch):
+    """Decision 46 (docs/decisions.md): the request must set temperature=0
+    and a fixed seed by default -- confirmed missing entirely before this
+    entry (Ollama's own defaults are temperature 0.8, no fixed seed,
+    inherently non-reproducible, per decision 45's own live finding)."""
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.delenv("OLLAMA_TEMPERATURE", raising=False)
+    monkeypatch.delenv("OLLAMA_SEED", raising=False)
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        captured["json"] = json
+        return MagicMock(json=lambda: {"message": {"content": "ok"}}, raise_for_status=lambda: None)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    generate_structured("some prompt")
+
+    assert captured["json"]["options"] == {"temperature": 0.0, "seed": 42}
+
+
+def test_call_ollama_respects_temperature_and_seed_overrides(monkeypatch):
+    """Same env-var-configurable pattern as OLLAMA_MODEL/OLLAMA_BASE_URL --
+    a caller who genuinely wants sampling variance (or a different fixed
+    seed) can still get it, this is not hardcoded."""
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_TEMPERATURE", "0.7")
+    monkeypatch.setenv("OLLAMA_SEED", "7")
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        captured["json"] = json
+        return MagicMock(json=lambda: {"message": {"content": "ok"}}, raise_for_status=lambda: None)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    generate_structured("some prompt")
+
+    assert captured["json"]["options"] == {"temperature": 0.7, "seed": 7}
