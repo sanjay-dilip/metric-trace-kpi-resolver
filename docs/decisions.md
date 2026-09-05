@@ -918,6 +918,43 @@ No scenario was flagged by more than one pattern, and `data_quality_overclaim` (
 
 **What this follow-up does NOT do:** does not re-run the 24-scenario gate (both questions answered entirely from this run's own already-generated log and decision 42's own committed table). Does not change the cutoff logic, the detector patterns, or `ScenarioScore`'s schema -- no wiring bug was found, so no fix was needed or made. Does not revise the gate's own stated verdict (3 of 4 thresholds fail, skeptic/verifier in scope) -- both questions confirm the result is real and correctly computed, not artifactually inflated by a bug in either direction.
 
+---
+
+**Update, issue #171, Part 2 -- the full 24-scenario gate re-run under decision 46's fixed settings (`temperature=0`, `seed=42`), the reproduction this decision's own numbers needed.** Run via a checkpointed variant (`scripts/run_decision5_gate_partial.py` + `scripts/combine_decision5_gate_results.py`, added this session after two full-script attempts were killed mid-run by a host-level low-memory safety trigger with zero output preserved -- an environment constraint, not a defect in the original script; the checkpointed variant writes each scenario's result to JSON immediately so a kill loses only the in-flight scenario). Same 48 real calls (`explain_investigation` + `assess_confidence`, `llama3.1:8b`), same `BENCHMARK_ENTRIES`, same scoring path (`score_scenario`) as the original run -- only the settings changed.
+
+**All four thresholds, reproduced numbers vs. this decision's original (pre-fix) numbers:**
+
+| Threshold | Original (pre-fix) | Reproduced (fixed settings) | Verdict |
+|---|---|---|---|
+| 1. Root-cause accuracy | 24/24 = 100.0% PASS | 24/24 = 100.0% PASS | **Unchanged, as expected** -- deterministic, doesn't depend on the confidence step or prose phrasing. |
+| 2. Escalation recall (ambiguous) | 3/6 = 50.0% FAIL | 2/6 = 33.3% FAIL | Same verdict, number moved further from the >=90% threshold, not closer. |
+| 3. False-escalation rate (non-ambiguous) | 5/18 = 27.8% FAIL | 6/18 = 33.3% FAIL | Same verdict, number moved further from passing. |
+| 4. Unsupported-claim rate | 4/24 = 16.7% FAIL | 2/24 = 8.3% **PASS** | **Verdict flips.** Not expected -- see below. |
+
+**Overall gate conclusion is unchanged: at least one threshold still fails (now 2 of 4, not 3 of 4), so per decision 5's own rule, the skeptic/verifier agent remains in scope.** But "unchanged conclusion" understates what actually happened underneath it -- stated precisely, not smoothed over:
+
+**11 of 24 scenarios (46%) changed `escalation_status` and/or `unsupported_claim_patterns` between the two runs, despite identical fixed settings, identical code, and identical scenarios:**
+
+| Scenario | Original | Reproduced |
+|---|---|---|
+| `case_02_multi_cause` | false_escalation, [residual_self_contradiction] | correct_no_escalation, [] |
+| `case_03_hybrid_fallback` | correct_no_escalation, [sign_dropping] | correct_no_escalation, [] |
+| `case_04_governance_drift` | correct_no_escalation, [] | false_escalation, [] |
+| `case_06_negative_control` | false_escalation, [] | false_escalation, [residual_self_contradiction] |
+| `case_07_precedence_conflict` | correct_no_escalation, [] | false_escalation, [] |
+| `case_08_stale_extract` | false_escalation, [] | correct_no_escalation, [] |
+| `case_11_referential_integrity_source_b` | correct_no_escalation, [] | correct_no_escalation, [residual_self_contradiction] |
+| `case_20_stale_extract_join_collision` | correct_no_escalation, [sign_dropping] | correct_no_escalation, [] |
+| `case_21_filter_add_direction` | correct_no_escalation, [] | false_escalation, [] |
+| `ambiguous_refund_timing` | true_escalation, [] | missed_escalation, [] |
+| `ambiguous_customer_counting` | missed_escalation, [existence_overclaim] | missed_escalation, [] |
+
+**This is genuinely new information, not a repeat of decision 46's own reason-text finding.** This section's own Part 1 update (immediately above) proved confidence LABELS are stable across 3 runs when `assess_confidence` is called in isolation against a fixed 12-scenario batch. This run shows that at full-gate scale -- which ALSO calls `explain_investigation` for real prose, something the isolated batch never exercises -- both the confidence label (driving `escalation_status`) and the unsupported-claim detectors (driven by `explain_investigation`'s prose, matched via phrase/regex patterns in `tests/fixtures/eval_scoring.py`) still churn substantially, even though `_call_ollama` (`src/llm_client.py`) applies the same `temperature=0`/`seed=42` options to every Ollama call in this codebase, `explain_investigation` and `assess_confidence` alike -- confirmed directly by reading `_call_ollama`'s single shared call site, not assumed. **The mechanism is not a settings gap; it is decision 46's own already-named root cause (CPU multi-threaded floating-point non-associativity) acting at a scale and on an output shape (free-text prose feeding a phrase-matching detector) where it can flip a scored outcome, not just reword a sentence.** Decision 46 characterized its own 8/12 reason-text mismatch as "semantically equivalent, not a new defect" because nothing downstream read that text structurally -- this run is the first evidence that when downstream scoring DOES read prose structurally (a detector matching specific phrases like "not evidence that" or a sign-carrying dollar figure), the same class of variance changes the scored result, in both directions (previously-flagged patterns cleared: `case_02`, `case_03`, `case_20`, `ambiguous_customer_counting`'s `existence_overclaim`; new ones appeared: `case_06`, `case_11`, both `residual_self_contradiction`).
+
+**Consequence, stated at the precision this evidence supports:** decision 46's fix is confirmed to do exactly what it was built to do (stabilize `assess_confidence`'s label output at the scale it was tested against) and is confirmed to NOT make the full 24-scenario gate's numbers reproducible run-to-run -- a materially narrower claim than "the gate is now deterministic." A future session should not treat any single full-gate run's exact per-scenario table, or its exact threshold percentages, as a fixed ground truth to regression-test against -- only the coarser pass/fail pattern (currently: 1 and shifting-toward-4 pass, 2 and 3 fail) has been shown stable so far, and even that rests on n=1 post-fix full run, not repeated confirmation. **Whether the unsupported-claim-rate threshold's PASS in this run is a reliable new state or a one-run artifact of the same prose variance that could just as easily flip it back to FAIL on a third run is explicitly unresolved** -- this update does not claim otherwise, and does not re-run the gate a third time to find out (out of this task's own scope, per issue #171).
+
+**What this update does NOT do:** does not re-verify decisions 14/30/32/36/37/41's defect-recurrence findings individually (out of scope, per issue #171). Does not design a new escalation cutoff or begin skeptic/verifier work (both explicitly deferred). Does not attempt to make `explain_investigation`'s prose deterministic or make the unsupported-claim detectors robust to paraphrase variance -- naming that gap is this update's job, closing it is not.
+
 ## 46. Ollama temperature=0 and a fixed seed set by default -- live before/after proof: confidence LABEL determinism achieved (12/12), reason-text determinism not (8/12)
 
 **Decision:** Confirmed, before making any change, that `src/llm_client.py`'s `_call_ollama` sent no `options` at all -- no `temperature`, no `seed` -- so every call used Ollama's own defaults (temperature 0.8, no fixed seed), which is inherently non-reproducible. This is the direct, previously-unnamed root cause of decision 45's own pre-merge finding (3 of 12 scenarios flipping `ConfidenceAssessment.confidence` between two independent runs with no prompt/code change).
