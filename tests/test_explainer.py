@@ -10,12 +10,15 @@ from unittest.mock import MagicMock
 from src import explainer
 from src.explainer import (
     ESCALATION_STATEMENT,
+    ClaimedCategoryCounts,
     ConfidenceAssessment,
+    _format_claimed_counts_prompt,
     _format_confidence_prompt,
     _format_evidence_block,
     _format_evidence_prompt,
     assess_confidence,
     explain_investigation,
+    extract_claimed_counts,
 )
 from src.schema import (
     DataQualityIssue,
@@ -470,3 +473,76 @@ def test_assess_confidence_threads_data_quality_checked_through_to_the_prompt(mo
     assess_confidence(_EMPTY_EVIDENCE, data_quality_checked=False)
 
     assert "Not checked" in captured["prompt"]
+
+
+# --- Skeptic/verifier core, Step 1: the cardinality-claim extractor. ---
+
+
+def test_claimed_counts_prompt_contains_only_the_explanation_text_no_ground_truth():
+    """The actual, explicit design requirement: this prompt must never see
+    real evidence, a real category length, or known_gap -- extraction must
+    not be tempted to "correct" a number toward what it thinks is right.
+    Confirmed both by signature inspection (no evidence parameter exists to
+    pass) and by checking the built prompt for the exact explanation text."""
+    import inspect
+
+    params = list(inspect.signature(_format_claimed_counts_prompt).parameters)
+    assert params == ["explanation"]
+
+    prompt = _format_claimed_counts_prompt("There are two data-quality issues affecting the discrepancy.")
+    assert "There are two data-quality issues affecting the discrepancy." in prompt
+    assert "known_gap" not in prompt
+
+
+def test_claimed_counts_prompt_instructs_null_for_no_claim_not_a_guessed_number():
+    prompt = _format_claimed_counts_prompt("Some explanation text.")
+    assert "do NOT guess a number" in prompt
+    assert "null" in prompt
+
+
+def test_extract_claimed_counts_parses_clean_json_response(monkeypatch):
+    def fake_generate_structured(prompt, response_schema=None):
+        assert response_schema is None  # prompt-instructed JSON, not response_format (decision 33's own precedent)
+        return (
+            '{"reconciliation": null, "data_quality_issues": 2, '
+            '"definition_differences": null, "self_consistency_issues": null}'
+        )
+
+    monkeypatch.setattr(explainer, "generate_structured", fake_generate_structured)
+
+    result = extract_claimed_counts("Additionally, there are two data-quality issues that affect the discrepancy.")
+
+    assert result == ClaimedCategoryCounts(
+        reconciliation=None, data_quality_issues=2, definition_differences=None, self_consistency_issues=None
+    )
+
+
+def test_extract_claimed_counts_strips_markdown_json_fence(monkeypatch):
+    def fake_generate_structured(prompt, response_schema=None):
+        return (
+            '```json\n{"reconciliation": 1, "data_quality_issues": null, '
+            '"definition_differences": null, "self_consistency_issues": null}\n```'
+        )
+
+    monkeypatch.setattr(explainer, "generate_structured", fake_generate_structured)
+
+    result = extract_claimed_counts("The investigation only found a single reconciled cause.")
+
+    assert result.reconciliation == 1
+
+
+def test_extract_claimed_counts_threads_explanation_text_through_to_the_prompt(monkeypatch):
+    captured = {}
+
+    def fake_generate_structured(prompt, response_schema=None):
+        captured["prompt"] = prompt
+        return (
+            '{"reconciliation": null, "data_quality_issues": null, '
+            '"definition_differences": null, "self_consistency_issues": null}'
+        )
+
+    monkeypatch.setattr(explainer, "generate_structured", fake_generate_structured)
+
+    extract_claimed_counts("A distinctive marker sentence unlikely to appear elsewhere.")
+
+    assert "A distinctive marker sentence unlikely to appear elsewhere." in captured["prompt"]

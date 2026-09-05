@@ -383,6 +383,99 @@ def _format_confidence_prompt(evidence: InvestigationEvidence, data_quality_chec
     )
 
 
+class ClaimedCategoryCounts(BaseModel):
+    """Skeptic/verifier core, Step 1 (docs/decisions.md): the cardinality-
+    claim extractor's output. Targets finding #1 (decisions 36/37) directly
+    -- Case 20's live response stated "there are two data-quality issues"
+    against a real list of length one, and no existing detector catches a
+    bare stated numeral against a real category count. This model is
+    deliberately narrower than `LLMClaimGrading` (tests/fixtures/eval_scoring.py,
+    decision 33): that grader was given the prose AND the real evidence
+    together and asked to JUDGE whether four defect patterns were present --
+    a judgment task that over-detected (4 false positives across 6 calls,
+    decision 33). This model does no judgment of any kind and is never
+    given real evidence at all -- it extracts a bare fact (what number, if
+    any, the prose itself claims) from the prose alone. Comparing that
+    number against the real, deterministically-computed category length is
+    entirely deterministic Python, done elsewhere, not by this model or
+    its prompt.
+
+    Every field is `int | None`, one per countable evidence category. `None`
+    means the prose makes NO count claim about that category at all --
+    genuinely distinct from a claimed count of zero (e.g. "the investigation
+    did not identify any reconciled causes" is a claimed count of 0, not
+    None; a response that never mentions reconciled causes at all is None).
+    Collapsing that distinction would make this extractor useless for
+    finding #1's own purpose, which is comparing a REAL claimed number
+    against a real list length -- a category the prose never mentions has
+    no claim to compare."""
+
+    reconciliation: int | None
+    """A stated count of reconciled causes, or None if the prose makes no count claim about this category."""
+
+    data_quality_issues: int | None
+    """A stated count of data-quality issues, or None if the prose makes no count claim about this category."""
+
+    definition_differences: int | None
+    """A stated count of definitional differences, or None if the prose makes no count claim about this category."""
+
+    self_consistency_issues: int | None
+    """A stated count of self-consistency issues, or None if the prose makes no count claim about this category."""
+
+
+def _format_claimed_counts_prompt(explanation: str) -> str:
+    """Deliberately given ONLY `explanation` -- no InvestigationEvidence, no
+    real category lengths, no known_gap. This is the design's whole point
+    (see ClaimedCategoryCounts' own docstring): extraction must not see
+    ground truth, so it cannot be tempted to "correct" a number toward what
+    it thinks is right, or to reason about correctness at all. The
+    comparison against real evidence happens later, in deterministic code,
+    not here."""
+    return (
+        "You are extracting bare factual claims from a piece of business writing -- you are "
+        "NOT judging whether the writing is correct, complete, or well-reasoned. Below is a "
+        "written explanation of a KPI-discrepancy investigation. It may discuss up to four "
+        "categories of finding: reconciled causes, data-quality issues, definitional "
+        "differences, and self-consistency issues.\n\n"
+        "## Explanation under review\n"
+        f"{explanation}\n\n"
+        "For EACH of the four categories below, state whether the explanation claims a "
+        "SPECIFIC NUMBER of items in that category (e.g. 'there are two data-quality issues', "
+        "'no reconciled causes were found' [a claimed count of zero], 'a single self-"
+        "consistency issue'). If the explanation does not mention a category at all, or "
+        "discusses it without ever stating or implying a specific count, the value for that "
+        "category is null -- do NOT guess a number, and do NOT assume a count of one just "
+        "because a category is mentioned in passing (e.g. 'the data-quality issue' does not, "
+        "by itself, claim a count -- only an explicit number or quantity word like 'a single', "
+        "'two', 'no', 'zero', 'both' does).\n\n"
+        "Respond with ONLY a single JSON object, no other text before or after it, no markdown "
+        "code fences, with EXACTLY these four fields, each either an integer or null: "
+        '{"reconciliation": <int|null>, "data_quality_issues": <int|null>, '
+        '"definition_differences": <int|null>, "self_consistency_issues": <int|null>}'
+    )
+
+
+def extract_claimed_counts(explanation: str) -> ClaimedCategoryCounts:
+    """Skeptic/verifier core, Step 1: reads already-generated explainer
+    prose and extracts, per countable category, whether the prose states a
+    specific count and what number -- nothing broader. A separate,
+    independent call from `explain_investigation` and `assess_confidence`
+    (same "distinct step, not folded into generation" principle those two
+    already establish) -- takes an already-produced explanation string, not
+    an InvestigationEvidence, since its whole job is reading what was
+    already SAID, not the real facts.
+
+    Deliberately does not wire into score_scenario's gating -- that is a
+    follow-up, once this extraction step itself is proven (see
+    docs/decisions.md for the required proof-plan results before that
+    follow-up is trusted)."""
+    prompt = _format_claimed_counts_prompt(explanation)
+    raw = generate_structured(prompt)
+    assert isinstance(raw, str)
+    cleaned = _CONFIDENCE_JSON_FENCE_RE.sub("", raw).strip()
+    return ClaimedCategoryCounts.model_validate_json(cleaned)
+
+
 def assess_confidence(evidence: InvestigationEvidence, data_quality_checked: bool = True) -> ConfidenceAssessment:
     """Build 4, Day 1, Part 1: a new, independent step, deliberately not a
     parameter folded into `explain_investigation` -- this needs to run as
